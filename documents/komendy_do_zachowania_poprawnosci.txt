@@ -1,0 +1,9 @@
+-- Data przeglądu + 1 rok
+
+UPDATE Pojazd
+SET data_przegladu = MAKE_DATE(2026, EXTRACT(MONTH FROM data_przegladu)::int, EXTRACT(DAY FROM data_przegladu)::int);
+
+-- Data przeglądu + 1 rok
+
+UPDATE Pojazd
+SET data_waznosci_ubezpieczen = MAKE_DATE(2026, EXTRACT(MONTH FROM data_waznosci_ubezpieczen)::int, EXTRACT(DAY FROM data_waznosci_ubezpieczen)::int);

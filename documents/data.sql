@@ -4,6 +4,8 @@ BEGIN; -- Rozpoczęcie transakcji
 -- 1. TABELA POJAZD
 -- =============================================
 
+TRUNCATE TABLE Platnosci, Przebieg_kursu, Kursant, Instruktorzy, Pojazd RESTART IDENTITY CASCADE;
+
 insert into Pojazd (model_pojazdu, numer_rejestracyjny, numer_VIN , stan_techniczny, stan_paliwa, data_waznosci_ubezpieczen, data_przegladu, rodzaj_skrzyni_biegow, status_pojazdu, przebieg) values ('Suzuki Swift', 'KR 70723', 'WBAYP5C58ED218249', null, 10, '2025-03-22', '2025-03-01', 'Automatyczna', 'Sprawny', 187400);
 insert into Pojazd (model_pojazdu, numer_rejestracyjny, numer_VIN , stan_techniczny, stan_paliwa, data_waznosci_ubezpieczen, data_przegladu, rodzaj_skrzyni_biegow, status_pojazdu, przebieg) values ('Suzuki Swift', 'KR 29714', 'WAUSF98E77A691587', 'at velit eu', 14, '2026-05-16', '2025-07-14', 'Automatyczna', 'Sprawny', 133310);
 insert into Pojazd (model_pojazdu, numer_rejestracyjny, numer_VIN , stan_techniczny, stan_paliwa, data_waznosci_ubezpieczen, data_przegladu, rodzaj_skrzyni_biegow, status_pojazdu, przebieg) values ('Hyundai i20', 'KR 35349', 'WA1EY94L47D154778', null, 44, '2025-08-14', '2025-11-20', 'Automatyczna', 'Sprawny', 161770);
@@ -106,32 +108,29 @@ insert into Pojazd (model_pojazdu, numer_rejestracyjny, numer_VIN , stan_technic
 insert into Pojazd (model_pojazdu, numer_rejestracyjny, numer_VIN , stan_techniczny, stan_paliwa, data_waznosci_ubezpieczen, data_przegladu, rodzaj_skrzyni_biegow, status_pojazdu, przebieg) values ('Suzuki Swift', 'KR 27785', '2C4RDGCG7ER757746', 'sodales sed tincidunt eu felis', 42, '2026-11-14', '2025-01-31', 'Manualna', 'Sprawny', 170129);
 
 
-
 -- =============================================
 -- 2. TABELA INSTRUKTORZY
 -- =============================================
 insert into Instruktorzy (ID_pojazdu, imie, nazwisko, adres, numer_telefonu, email, data_waznosci_licencji) values (37, 'Patric', 'Goldhill', '6581 Maple Wood Street', '312942924', 'pgoldhill0@trellian.com', '2027-03-24');
-insert into Instruktorzy (ID_pojazdu, imie, nazwisko, adres, numer_telefonu, email, data_waznosci_licencji) values (65, 'Britteny', 'Coen', '739 Northridge Court', '006840095', 'bcoen1@smh.com.au', '2027-08-11');
+insert into Instruktorzy (ID_pojazdu, imie, nazwisko, adres, numer_telefonu, email, data_waznosci_licencji) values (2, 'Britteny', 'Coen', '739 Northridge Court', '006840095', 'bcoen1@smh.com.au', '2027-08-11');
 insert into Instruktorzy (ID_pojazdu, imie, nazwisko, adres, numer_telefonu, email, data_waznosci_licencji) values (16, 'Sissy', 'Kimberley', '18340 Pepper Wood Avenue', '614031934', 'skimberley2@chronoengine.com', '2027-11-13');
 insert into Instruktorzy (ID_pojazdu, imie, nazwisko, adres, numer_telefonu, email, data_waznosci_licencji) values (44, 'Munroe', 'Parmenter', '28 Gulseth Lane', '110133342', 'mparmenter3@printfriendly.com', '2027-04-22');
-insert into Instruktorzy (ID_pojazdu, imie, nazwisko, adres, numer_telefonu, email, data_waznosci_licencji) values (70, 'Cozmo', 'Lawes', '8 Lukken Circle', '664980350', 'clawes4@yelp.com', '2027-12-10');
-insert into Instruktorzy (ID_pojazdu, imie, nazwisko, adres, numer_telefonu, email, data_waznosci_licencji) values (96, 'Jerrie', 'Veasey', '8146 Prentice Hill', '808533149', 'jveasey5@blog.com', '2027-03-31');
+insert into Instruktorzy (ID_pojazdu, imie, nazwisko, adres, numer_telefonu, email, data_waznosci_licencji) values (3, 'Cozmo', 'Lawes', '8 Lukken Circle', '664980350', 'clawes4@yelp.com', '2027-12-10');
+insert into Instruktorzy (ID_pojazdu, imie, nazwisko, adres, numer_telefonu, email, data_waznosci_licencji) values (4, 'Jerrie', 'Veasey', '8146 Prentice Hill', '808533149', 'jveasey5@blog.com', '2027-03-31');
 insert into Instruktorzy (ID_pojazdu, imie, nazwisko, adres, numer_telefonu, email, data_waznosci_licencji) values (63, 'Larissa', 'Cammis', '65 Ronald Regan Plaza', '747338078', 'lcammis6@yolasite.com', '2027-11-26');
 insert into Instruktorzy (ID_pojazdu, imie, nazwisko, adres, numer_telefonu, email, data_waznosci_licencji) values (42, 'Lucila', 'Witt', '9445 Sunfield Alley', '855044165', 'lwitt7@time.com', '2027-06-28');
-insert into Instruktorzy (ID_pojazdu, imie, nazwisko, adres, numer_telefonu, email, data_waznosci_licencji) values (53, 'Moses', 'Ling', '59972 Roth Place', '309875946', 'mling8@cpanel.net', '2027-06-19');
+insert into Instruktorzy (ID_pojazdu, imie, nazwisko, adres, numer_telefonu, email, data_waznosci_licencji) values (54, 'Moses', 'Ling', '59972 Roth Place', '309875946', 'mling8@cpanel.net', '2027-06-19');
 insert into Instruktorzy (ID_pojazdu, imie, nazwisko, adres, numer_telefonu, email, data_waznosci_licencji) values (10, 'Clemente', 'Pakeman', '7 Express Park', '605998308', 'cpakeman9@zimbio.com', '2027-06-13');
 insert into Instruktorzy (ID_pojazdu, imie, nazwisko, adres, numer_telefonu, email, data_waznosci_licencji) values (16, 'Natassia', 'Davidi', '4539 Anderson Avenue', '737614318', 'ndavidia@fotki.com', '2027-11-22');
 insert into Instruktorzy (ID_pojazdu, imie, nazwisko, adres, numer_telefonu, email, data_waznosci_licencji) values (56, 'Zach', 'Seville', '705 Hollow Ridge Court', '479548379', 'zsevilleb@smh.com.au', '2027-06-01');
 insert into Instruktorzy (ID_pojazdu, imie, nazwisko, adres, numer_telefonu, email, data_waznosci_licencji) values (72, 'Lucine', 'Agar', '9 Spaight Pass', '628279768', 'lagarc@pen.io', '2027-07-24');
-insert into Instruktorzy (ID_pojazdu, imie, nazwisko, adres, numer_telefonu, email, data_waznosci_licencji) values (67, 'Marius', 'Goaks', '1755 Union Terrace', '536723079', 'mgoaksd@geocities.jp', '2026-12-31');
-insert into Instruktorzy (ID_pojazdu, imie, nazwisko, adres, numer_telefonu, email, data_waznosci_licencji) values (85, 'Matti', 'Stoeck', '34 Kim Plaza', '159425152', 'mstoecke@omniture.com', '2027-10-29');
-insert into Instruktorzy (ID_pojazdu, imie, nazwisko, adres, numer_telefonu, email, data_waznosci_licencji) values (59, 'Allyn', 'Philips', '33 Luster Drive', '753436542', 'aphilipsf@epa.gov', '2027-11-16');
+insert into Instruktorzy (ID_pojazdu, imie, nazwisko, adres, numer_telefonu, email, data_waznosci_licencji) values (68, 'Marius', 'Goaks', '1755 Union Terrace', '536723079', 'mgoaksd@geocities.jp', '2026-12-31');
+insert into Instruktorzy (ID_pojazdu, imie, nazwisko, adres, numer_telefonu, email, data_waznosci_licencji) values (5, 'Matti', 'Stoeck', '34 Kim Plaza', '159425152', 'mstoecke@omniture.com', '2027-10-29');
+insert into Instruktorzy (ID_pojazdu, imie, nazwisko, adres, numer_telefonu, email, data_waznosci_licencji) values (58, 'Allyn', 'Philips', '33 Luster Drive', '753436542', 'aphilipsf@epa.gov', '2027-11-16');
 insert into Instruktorzy (ID_pojazdu, imie, nazwisko, adres, numer_telefonu, email, data_waznosci_licencji) values (97, 'Kenna', 'Lorente', '5 Surrey Junction', '207729040', 'klorenteg@disqus.com', '2027-03-02');
 insert into Instruktorzy (ID_pojazdu, imie, nazwisko, adres, numer_telefonu, email, data_waznosci_licencji) values (18, 'La verne', 'Poxton', '156 Express Court', '388871855', 'lpoxtonh@ning.com', '2027-03-25');
 insert into Instruktorzy (ID_pojazdu, imie, nazwisko, adres, numer_telefonu, email, data_waznosci_licencji) values (10, 'Wendall', 'Challenor', '48 Ryan Avenue', '321867311', 'wchallenori@ocn.ne.jp', '2027-08-25');
 insert into Instruktorzy (ID_pojazdu, imie, nazwisko, adres, numer_telefonu, email, data_waznosci_licencji) values (56, 'Johnette', 'Budd', '7 Lawn Drive', '391599437', 'jbuddj@themeforest.net', '2027-01-16');
-
-
 
 -- =============================================
 -- 3. TABELA KURSANT

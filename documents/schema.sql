@@ -96,3 +96,7 @@ CREATE TABLE Platnosci (
     tytul_platnosci TEXT,
     ID_faktury VARCHAR(50)
 );
+
+REVOKE ALL ON Kursant FROM public;
+-- (Każdy będzie mógł zobaczyć kto jest kursantem, ale nie zobaczy danych wrażliwych)
+GRANT SELECT (ID_Kursanta, imie, nazwisko, zgoda_marketingowa, numer_PKK, status_PKK) ON Kursant TO public;

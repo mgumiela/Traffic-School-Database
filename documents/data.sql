@@ -3,7 +3,7 @@ BEGIN; -- Rozpoczęcie transakcji
 -- =============================================
 -- 1. TABELA POJAZD
 -- =============================================
--- Wklej tutaj zawartość pliku Pojazd.sql z Mockaroo
+
 insert into Pojazd (model_pojazdu, numer_rejestracyjny, numer_VIN , stan_techniczny, stan_paliwa, data_waznosci_ubezpieczen, data_przegladu, rodzaj_skrzyni_biegow, status_pojazdu, przebieg) values ('Suzuki Swift', 'KR 70723', 'WBAYP5C58ED218249', null, 10, '2025-03-22', '2025-03-01', 'Automatyczna', 'Sprawny', 187400);
 insert into Pojazd (model_pojazdu, numer_rejestracyjny, numer_VIN , stan_techniczny, stan_paliwa, data_waznosci_ubezpieczen, data_przegladu, rodzaj_skrzyni_biegow, status_pojazdu, przebieg) values ('Suzuki Swift', 'KR 29714', 'WAUSF98E77A691587', 'at velit eu', 14, '2026-05-16', '2025-07-14', 'Automatyczna', 'Sprawny', 133310);
 insert into Pojazd (model_pojazdu, numer_rejestracyjny, numer_VIN , stan_techniczny, stan_paliwa, data_waznosci_ubezpieczen, data_przegladu, rodzaj_skrzyni_biegow, status_pojazdu, przebieg) values ('Hyundai i20', 'KR 35349', 'WA1EY94L47D154778', null, 44, '2025-08-14', '2025-11-20', 'Automatyczna', 'Sprawny', 161770);

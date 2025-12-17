@@ -26,3 +26,7 @@
 
 *.sql.bak
 *.sql~
+
+data.txt
+schema.txt
+triggers.txt

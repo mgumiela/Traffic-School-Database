@@ -54,7 +54,7 @@ CREATE TABLE IF NOT EXISTS Przebieg_kursu_Archiwum (
     data_archiwizacji TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 
--- 1.4 PLATNOSCI ARCHIWUM
+-- PLATNOSCI ARCHIWUM
 CREATE TABLE IF NOT EXISTS Platnosci_Archiwum (
     ID_Archiwum SERIAL PRIMARY KEY,
     oryginalne_ID_Platnosci INT,

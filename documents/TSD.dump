@@ -1,0 +1,2445 @@
+--
+-- PostgreSQL database dump
+--
+
+\restrict MeiaySM9CkUXOM7C3s4vRIrMTentD7shiAsXDNVzY3S21DyJ6mPVdvIcEJvbD6C
+
+-- Dumped from database version 18.1
+-- Dumped by pg_dump version 18.0
+
+SET statement_timeout = 0;
+SET lock_timeout = 0;
+SET idle_in_transaction_session_timeout = 0;
+SET transaction_timeout = 0;
+SET client_encoding = 'UTF8';
+SET standard_conforming_strings = on;
+SELECT pg_catalog.set_config('search_path', '', false);
+SET check_function_bodies = false;
+SET xmloption = content;
+SET client_min_messages = warning;
+SET row_security = off;
+
+--
+-- Name: metoda_platnosci_enum; Type: TYPE; Schema: public; Owner: postgres
+--
+
+CREATE TYPE public.metoda_platnosci_enum AS ENUM (
+    'Gotówka',
+    'Karta',
+    'Przelew'
+);
+
+
+ALTER TYPE public.metoda_platnosci_enum OWNER TO postgres;
+
+--
+-- Name: rodzaj_skrzyni_enum; Type: TYPE; Schema: public; Owner: postgres
+--
+
+CREATE TYPE public.rodzaj_skrzyni_enum AS ENUM (
+    'Manualna',
+    'Automatyczna'
+);
+
+
+ALTER TYPE public.rodzaj_skrzyni_enum OWNER TO postgres;
+
+--
+-- Name: status_kursu_enum; Type: TYPE; Schema: public; Owner: postgres
+--
+
+CREATE TYPE public.status_kursu_enum AS ENUM (
+    'Rozpoczęty',
+    'W trakcie',
+    'Zakończony',
+    'Rezygnacja'
+);
+
+
+ALTER TYPE public.status_kursu_enum OWNER TO postgres;
+
+--
+-- Name: status_pkk_enum; Type: TYPE; Schema: public; Owner: postgres
+--
+
+CREATE TYPE public.status_pkk_enum AS ENUM (
+    'Aktywny',
+    'Zablokowany',
+    'Wykorzystany'
+);
+
+
+ALTER TYPE public.status_pkk_enum OWNER TO postgres;
+
+--
+-- Name: status_pojazdu_enum; Type: TYPE; Schema: public; Owner: postgres
+--
+
+CREATE TYPE public.status_pojazdu_enum AS ENUM (
+    'Sprawny',
+    'W serwisie',
+    'Sprzedany'
+);
+
+
+ALTER TYPE public.status_pojazdu_enum OWNER TO postgres;
+
+--
+-- Name: aktualizuj_czy_oplacone(); Type: FUNCTION; Schema: public; Owner: postgres
+--
+
+CREATE FUNCTION public.aktualizuj_czy_oplacone() RETURNS trigger
+    LANGUAGE plpgsql
+    AS $$
+DECLARE
+    suma_wplat DECIMAL(10, 2);
+    cena_kursu DECIMAL(10, 2) := 3200.00; 
+BEGIN
+    -- Liczymy sumę wszystkich wpłat dla danego kursu
+    SELECT SUM(kwota) INTO suma_wplat 
+    FROM Platnosci 
+    WHERE ID_indywidualnego_kursu = NEW.ID_indywidualnego_kursu;
+
+    -- Jeśli suma wpłat pokrywa cenę, odhaczamy kurs jako opłacony
+    IF suma_wplat >= cena_kursu THEN
+        UPDATE Przebieg_kursu 
+        SET czy_oplacone = TRUE 
+        WHERE ID_indywidualnego_kursu = NEW.ID_indywidualnego_kursu;
+    END IF;
+
+    RETURN NEW;
+END;
+$$;
+
+
+ALTER FUNCTION public.aktualizuj_czy_oplacone() OWNER TO postgres;
+
+--
+-- Name: archiwizuj_stare_dane(integer); Type: FUNCTION; Schema: public; Owner: postgres
+--
+
+CREATE FUNCTION public.archiwizuj_stare_dane(miesiecy_wstecz integer) RETURNS text
+    LANGUAGE plpgsql
+    AS $$
+DECLARE
+    limit_daty DATE;
+    liczba_kursow INT;
+    liczba_platnosci INT;
+    liczba_kursantow INT;
+BEGIN
+    -- Ustalenie daty granicznej
+    limit_daty := CURRENT_DATE - (miesiecy_wstecz || ' months')::INTERVAL;
+
+    -- Identifikacja kursów do archiwizacji
+    -- Kryterium: Status Zakończony/Rezygnacja ORAZ data_zapisu starsza niż limit
+
+    -- Tabela tymczasowa z ID Kursów
+    CREATE TEMP TABLE temp_kursy_do_archiwum ON COMMIT DROP AS
+    SELECT ID_indywidualnego_kursu, ID_Kursanta
+    FROM Przebieg_kursu
+    WHERE status_kursu IN ('Zakończony', 'Rezygnacja')
+      AND data_zapisu < limit_daty;
+
+    -- Kopiowanie i Usuwanie PŁATNOŚCI
+    -- Kopia
+    INSERT INTO Platnosci_Archiwum (
+        oryginalne_ID_Platnosci, oryginalne_ID_kursu, kwota, data_platnosci, 
+        metoda_platnosci, tytul_platnosci, ID_faktury
+    )
+    SELECT 
+        p.ID_Platnosci, p.ID_indywidualnego_kursu, p.kwota, p.data_platnosci, 
+        p.metoda_platnosci, p.tytul_platnosci, p.ID_faktury
+    FROM Platnosci p
+    JOIN temp_kursy_do_archiwum t ON p.ID_indywidualnego_kursu = t.ID_indywidualnego_kursu;
+
+    GET DIAGNOSTICS liczba_platnosci = ROW_COUNT;
+
+    -- Usunięcie
+    DELETE FROM Platnosci 
+    WHERE ID_indywidualnego_kursu IN (SELECT ID_indywidualnego_kursu FROM temp_kursy_do_archiwum);
+
+    -- Kopiowanie i Usuwanie PRZEBIEGU KURSU
+    -- Kopia
+    INSERT INTO Przebieg_kursu_Archiwum (
+        oryginalne_ID_kursu, oryginalne_ID_Kursanta, oryginalne_ID_Instruktora, 
+        czy_oplacone, status_kursu, data_zapisu, suma_godzin_teorii, 
+        suma_godzin_praktyki, czy_zdany_wew_teoria, czy_zdany_wew_praktyka, 
+        czy_zdany_zew_teoria, czy_zdany_zew_praktyka
+    )
+    SELECT 
+        pk.ID_indywidualnego_kursu, pk.ID_Kursanta, pk.ID_Instruktora, 
+        pk.czy_oplacone, pk.status_kursu, pk.data_zapisu, pk.suma_godzin_teorii, 
+        pk.suma_godzin_praktyki, pk.czy_zdany_wew_teoria, pk.czy_zdany_wew_praktyka, 
+        pk.czy_zdany_zew_teoria, pk.czy_zdany_zew_praktyka
+    FROM Przebieg_kursu pk
+    JOIN temp_kursy_do_archiwum t ON pk.ID_indywidualnego_kursu = t.ID_indywidualnego_kursu;
+
+    GET DIAGNOSTICS liczba_kursow = ROW_COUNT;
+
+    -- Usunięcie
+    DELETE FROM Przebieg_kursu 
+    WHERE ID_indywidualnego_kursu IN (SELECT ID_indywidualnego_kursu FROM temp_kursy_do_archiwum);
+
+    -- Kopiowanie i Usuwanie KURSANTÓW (Oraz Opiekunów)
+    -- Kryterium: Archiwizujemy kursanta TYLKO JEŚLI nie ma już żadnych aktywnych kursów w tabeli Przebieg_kursu
+    
+    -- Kursanci, którzy byli w tabeli tymczasowej, ale nie mają już żadnych wpisów w przebiegu kursu
+    CREATE TEMP TABLE temp_kursanci_do_archiwum ON COMMIT DROP AS
+    SELECT DISTINCT t.ID_Kursanta
+    FROM temp_kursy_do_archiwum t
+    WHERE NOT EXISTS (
+        SELECT 1 FROM Przebieg_kursu pk_active 
+        WHERE pk_active.ID_Kursanta = t.ID_Kursanta
+    );
+
+    -- Archiwizacja Opiekuna
+    INSERT INTO Opiekun_Archiwum (
+        oryginalne_ID_Opiekuna, oryginalne_ID_Kursanta, imie_op, nazwisko_op, 
+        numer_telefonu_op, email_op
+    )
+    SELECT 
+        o.ID_Opiekuna, o.ID_Kursanta, o.imie_op, o.nazwisko_op, 
+        o.numer_telefonu_op, o.email_op
+    FROM Opiekun o
+    JOIN temp_kursanci_do_archiwum tk ON o.ID_Kursanta = tk.ID_Kursanta;
+
+    DELETE FROM Opiekun 
+    WHERE ID_Kursanta IN (SELECT ID_Kursanta FROM temp_kursanci_do_archiwum);
+
+    -- Kopia KURSANTÓW do archiwum
+    INSERT INTO Kursant_Archiwum (
+        oryginalne_ID_Kursanta, imie, nazwisko, PESEL, adres, numer_telefonu, 
+        email, data_urodzenia, zgoda_marketingowa, numer_PKK, data_wydania_PKK, 
+        status_PKK, badania_lekarskie, data_waznosci_badan
+    )
+    SELECT 
+        k.ID_Kursanta, k.imie, k.nazwisko, k.PESEL, k.adres, k.numer_telefonu, 
+        k.email, k.data_urodzenia, k.zgoda_marketingowa, k.numer_PKK, k.data_wydania_PKK, 
+        k.status_PKK, k.badania_lekarskie, k.data_waznosci_badan
+    FROM Kursant k
+    JOIN temp_kursanci_do_archiwum tk ON k.ID_Kursanta = tk.ID_Kursanta;
+
+    GET DIAGNOSTICS liczba_kursantow = ROW_COUNT;
+
+    -- Usunięcie kursantów
+    DELETE FROM Kursant 
+    WHERE ID_Kursanta IN (SELECT ID_Kursanta FROM temp_kursanci_do_archiwum);
+
+    RETURN 'Archiwizacja zakończona. Przeniesiono: ' || 
+           liczba_platnosci || ' płatności, ' || 
+           liczba_kursow || ' kursów, ' || 
+           liczba_kursantow || ' kursantów.';
+END;
+$$;
+
+
+ALTER FUNCTION public.archiwizuj_stare_dane(miesiecy_wstecz integer) OWNER TO postgres;
+
+--
+-- Name: auto_zakonczenie_kursu(); Type: FUNCTION; Schema: public; Owner: postgres
+--
+
+CREATE FUNCTION public.auto_zakonczenie_kursu() RETURNS trigger
+    LANGUAGE plpgsql
+    AS $$
+BEGIN
+    -- Jeśli zdano praktykę zewnętrzną, zmieniamy status na Zakończony
+    IF NEW.czy_zdany_zew_praktyka = TRUE THEN
+        NEW.status_kursu := 'Zakończony'; 
+    END IF;
+    RETURN NEW;
+END;
+$$;
+
+
+ALTER FUNCTION public.auto_zakonczenie_kursu() OWNER TO postgres;
+
+--
+-- Name: dni_do_przegladu(integer); Type: FUNCTION; Schema: public; Owner: postgres
+--
+
+CREATE FUNCTION public.dni_do_przegladu(id_auta integer) RETURNS integer
+    LANGUAGE plpgsql
+    AS $$
+DECLARE
+    data_przegladu DATE;
+    wynik INT;
+BEGIN
+    -- Pobieramy datę przeglądu
+    SELECT Pojazd.data_przegladu INTO data_przegladu 
+    FROM Pojazd 
+    WHERE ID_Pojazdu = id_auta;
+
+    wynik := data_przegladu - CURRENT_DATE;
+
+    -- Jeśli termin minął, zwracamy 0
+    IF wynik < 0 THEN 
+        RETURN 0; 
+    END IF;
+
+    RETURN wynik;
+END;
+$$;
+
+
+ALTER FUNCTION public.dni_do_przegladu(id_auta integer) OWNER TO postgres;
+
+--
+-- Name: saldo_kursanta(integer); Type: FUNCTION; Schema: public; Owner: postgres
+--
+
+CREATE FUNCTION public.saldo_kursanta(id_kursu integer) RETURNS numeric
+    LANGUAGE plpgsql
+    AS $$
+DECLARE
+    cena_kursu DECIMAL(10,2) := 3200.00;
+    suma_wplat DECIMAL(10,2);
+BEGIN
+    -- Sumujemy wszystkie wpłaty dla danego kursu
+    SELECT COALESCE(SUM(kwota), 0) INTO suma_wplat 
+    FROM Platnosci 
+    WHERE ID_indywidualnego_kursu = id_kursu;
+
+    -- Zwracamy to co zostało do zapłaty
+    RETURN cena_kursu - suma_wplat;
+END;
+$$;
+
+
+ALTER FUNCTION public.saldo_kursanta(id_kursu integer) OWNER TO postgres;
+
+--
+-- Name: sprawdz_badania_przed_kursem(); Type: FUNCTION; Schema: public; Owner: postgres
+--
+
+CREATE FUNCTION public.sprawdz_badania_przed_kursem() RETURNS trigger
+    LANGUAGE plpgsql
+    AS $$
+DECLARE
+    waznosc DATE;
+BEGIN
+    SELECT data_waznosci_badan INTO waznosc FROM Kursant WHERE ID_Kursanta = NEW.ID_Kursanta;
+
+    IF waznosc < CURRENT_DATE THEN
+        RAISE EXCEPTION 'Błąd: Kursant ma nieważne badania lekarskie! Ważność skończyła się: %', waznosc;
+    END IF;
+    RETURN NEW;
+END;
+$$;
+
+
+ALTER FUNCTION public.sprawdz_badania_przed_kursem() OWNER TO postgres;
+
+--
+-- Name: sprawdz_licencje_instruktora(); Type: FUNCTION; Schema: public; Owner: postgres
+--
+
+CREATE FUNCTION public.sprawdz_licencje_instruktora() RETURNS trigger
+    LANGUAGE plpgsql
+    AS $$
+DECLARE
+    waznosc_licencji DATE;
+BEGIN
+    -- Pobieramy datę ważności licencji przypisanego instruktora
+    SELECT data_waznosci_licencji INTO waznosc_licencji FROM Instruktorzy WHERE ID_Instruktora = NEW.ID_Instruktora;
+
+    -- Jeśli licencja wygasła, blokujemy przypisanie
+    IF waznosc_licencji < CURRENT_DATE THEN
+        RAISE EXCEPTION 'Błąd: Instruktor ma nieważną licencję (ważna do: %). Wybierz innego instruktora.', waznosc_licencji;
+    END IF;
+    
+    RETURN NEW;
+END;
+$$;
+
+
+ALTER FUNCTION public.sprawdz_licencje_instruktora() OWNER TO postgres;
+
+--
+-- Name: sprawdz_stan_auta(); Type: FUNCTION; Schema: public; Owner: postgres
+--
+
+CREATE FUNCTION public.sprawdz_stan_auta() RETURNS trigger
+    LANGUAGE plpgsql
+    AS $$
+DECLARE
+    stan_auta status_pojazdu_enum;
+BEGIN
+    -- Pobieramy status auta
+    SELECT status_pojazdu INTO stan_auta FROM Pojazd WHERE ID_Pojazdu = NEW.ID_pojazdu;
+    
+    -- Jeśli auto nie jest sprawne, zwraca błąd
+    IF stan_auta <> 'Sprawny' THEN
+        RAISE EXCEPTION 'Błąd: Nie można przypisać tego auta. Jego status to: %', stan_auta;
+    END IF;
+    RETURN NEW;
+END;
+$$;
+
+
+ALTER FUNCTION public.sprawdz_stan_auta() OWNER TO postgres;
+
+--
+-- Name: wymagane_godziny(); Type: FUNCTION; Schema: public; Owner: postgres
+--
+
+CREATE FUNCTION public.wymagane_godziny() RETURNS trigger
+    LANGUAGE plpgsql
+    AS $$
+BEGIN
+    -- Jeśli zaliczamy egzamin, a godzin jest za mało
+    IF NEW.czy_zdany_wew_praktyka = TRUE AND NEW.suma_godzin_praktyki < 30 THEN
+        RAISE EXCEPTION 'Błąd: Nie można zaliczyć egzaminu! Kursant wyjeździł tylko % godzin (wymagane 30).', NEW.suma_godzin_praktyki;
+    END IF;
+    RETURN NEW;
+END;
+$$;
+
+
+ALTER FUNCTION public.wymagane_godziny() OWNER TO postgres;
+
+SET default_tablespace = '';
+
+SET default_table_access_method = heap;
+
+--
+-- Name: instruktorzy; Type: TABLE; Schema: public; Owner: postgres
+--
+
+CREATE TABLE public.instruktorzy (
+    id_instruktora integer NOT NULL,
+    id_pojazdu integer,
+    imie character varying(50) NOT NULL,
+    nazwisko character varying(50) NOT NULL,
+    adres character varying(64),
+    numer_telefonu character varying(20),
+    email character varying(255),
+    data_waznosci_licencji date
+);
+
+
+ALTER TABLE public.instruktorzy OWNER TO postgres;
+
+--
+-- Name: instruktorzy_id_instruktora_seq; Type: SEQUENCE; Schema: public; Owner: postgres
+--
+
+CREATE SEQUENCE public.instruktorzy_id_instruktora_seq
+    AS integer
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1;
+
+
+ALTER SEQUENCE public.instruktorzy_id_instruktora_seq OWNER TO postgres;
+
+--
+-- Name: instruktorzy_id_instruktora_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: postgres
+--
+
+ALTER SEQUENCE public.instruktorzy_id_instruktora_seq OWNED BY public.instruktorzy.id_instruktora;
+
+
+--
+-- Name: kursant; Type: TABLE; Schema: public; Owner: postgres
+--
+
+CREATE TABLE public.kursant (
+    id_kursanta integer NOT NULL,
+    imie character varying(50) NOT NULL,
+    nazwisko character varying(50) NOT NULL,
+    pesel character varying(11),
+    adres character varying(64),
+    numer_telefonu character varying(20),
+    email character varying(255),
+    data_urodzenia date,
+    zgoda_marketingowa boolean DEFAULT false,
+    numer_pkk character varying(20),
+    data_wydania_pkk date,
+    status_pkk public.status_pkk_enum DEFAULT 'Aktywny'::public.status_pkk_enum,
+    badania_lekarskie boolean DEFAULT false,
+    data_waznosci_badan date
+);
+
+
+ALTER TABLE public.kursant OWNER TO postgres;
+
+--
+-- Name: kursant_archiwum; Type: TABLE; Schema: public; Owner: postgres
+--
+
+CREATE TABLE public.kursant_archiwum (
+    id_archiwum integer NOT NULL,
+    oryginalne_id_kursanta integer,
+    imie character varying(50),
+    nazwisko character varying(50),
+    pesel character varying(11),
+    adres character varying(64),
+    numer_telefonu character varying(20),
+    email character varying(255),
+    data_urodzenia date,
+    zgoda_marketingowa boolean,
+    numer_pkk character varying(20),
+    data_wydania_pkk date,
+    status_pkk public.status_pkk_enum,
+    badania_lekarskie boolean,
+    data_waznosci_badan date,
+    data_archiwizacji timestamp without time zone DEFAULT CURRENT_TIMESTAMP
+);
+
+
+ALTER TABLE public.kursant_archiwum OWNER TO postgres;
+
+--
+-- Name: kursant_archiwum_id_archiwum_seq; Type: SEQUENCE; Schema: public; Owner: postgres
+--
+
+CREATE SEQUENCE public.kursant_archiwum_id_archiwum_seq
+    AS integer
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1;
+
+
+ALTER SEQUENCE public.kursant_archiwum_id_archiwum_seq OWNER TO postgres;
+
+--
+-- Name: kursant_archiwum_id_archiwum_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: postgres
+--
+
+ALTER SEQUENCE public.kursant_archiwum_id_archiwum_seq OWNED BY public.kursant_archiwum.id_archiwum;
+
+
+--
+-- Name: kursant_id_kursanta_seq; Type: SEQUENCE; Schema: public; Owner: postgres
+--
+
+CREATE SEQUENCE public.kursant_id_kursanta_seq
+    AS integer
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1;
+
+
+ALTER SEQUENCE public.kursant_id_kursanta_seq OWNER TO postgres;
+
+--
+-- Name: kursant_id_kursanta_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: postgres
+--
+
+ALTER SEQUENCE public.kursant_id_kursanta_seq OWNED BY public.kursant.id_kursanta;
+
+
+--
+-- Name: opiekun; Type: TABLE; Schema: public; Owner: postgres
+--
+
+CREATE TABLE public.opiekun (
+    id_opiekuna integer NOT NULL,
+    id_kursanta integer NOT NULL,
+    imie_op character varying(50),
+    nazwisko_op character varying(50),
+    numer_telefonu_op character varying(20),
+    email_op character varying(255)
+);
+
+
+ALTER TABLE public.opiekun OWNER TO postgres;
+
+--
+-- Name: opiekun_archiwum; Type: TABLE; Schema: public; Owner: postgres
+--
+
+CREATE TABLE public.opiekun_archiwum (
+    id_archiwum integer NOT NULL,
+    oryginalne_id_opiekuna integer,
+    oryginalne_id_kursanta integer,
+    imie_op character varying(50),
+    nazwisko_op character varying(50),
+    numer_telefonu_op character varying(20),
+    email_op character varying(255),
+    data_archiwizacji timestamp without time zone DEFAULT CURRENT_TIMESTAMP
+);
+
+
+ALTER TABLE public.opiekun_archiwum OWNER TO postgres;
+
+--
+-- Name: opiekun_archiwum_id_archiwum_seq; Type: SEQUENCE; Schema: public; Owner: postgres
+--
+
+CREATE SEQUENCE public.opiekun_archiwum_id_archiwum_seq
+    AS integer
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1;
+
+
+ALTER SEQUENCE public.opiekun_archiwum_id_archiwum_seq OWNER TO postgres;
+
+--
+-- Name: opiekun_archiwum_id_archiwum_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: postgres
+--
+
+ALTER SEQUENCE public.opiekun_archiwum_id_archiwum_seq OWNED BY public.opiekun_archiwum.id_archiwum;
+
+
+--
+-- Name: opiekun_id_opiekuna_seq; Type: SEQUENCE; Schema: public; Owner: postgres
+--
+
+CREATE SEQUENCE public.opiekun_id_opiekuna_seq
+    AS integer
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1;
+
+
+ALTER SEQUENCE public.opiekun_id_opiekuna_seq OWNER TO postgres;
+
+--
+-- Name: opiekun_id_opiekuna_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: postgres
+--
+
+ALTER SEQUENCE public.opiekun_id_opiekuna_seq OWNED BY public.opiekun.id_opiekuna;
+
+
+--
+-- Name: opinie; Type: TABLE; Schema: public; Owner: postgres
+--
+
+CREATE TABLE public.opinie (
+    id_opinii integer NOT NULL,
+    id_instruktora integer,
+    ocena integer,
+    komentarz text,
+    data_dodania date DEFAULT CURRENT_DATE
+);
+
+
+ALTER TABLE public.opinie OWNER TO postgres;
+
+--
+-- Name: opinie_id_opinii_seq; Type: SEQUENCE; Schema: public; Owner: postgres
+--
+
+CREATE SEQUENCE public.opinie_id_opinii_seq
+    AS integer
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1;
+
+
+ALTER SEQUENCE public.opinie_id_opinii_seq OWNER TO postgres;
+
+--
+-- Name: opinie_id_opinii_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: postgres
+--
+
+ALTER SEQUENCE public.opinie_id_opinii_seq OWNED BY public.opinie.id_opinii;
+
+
+--
+-- Name: platnosci; Type: TABLE; Schema: public; Owner: postgres
+--
+
+CREATE TABLE public.platnosci (
+    id_platnosci integer NOT NULL,
+    id_indywidualnego_kursu integer NOT NULL,
+    kwota numeric(10,2) NOT NULL,
+    data_platnosci date DEFAULT CURRENT_DATE,
+    metoda_platnosci public.metoda_platnosci_enum,
+    tytul_platnosci text,
+    id_faktury character varying(50)
+);
+
+
+ALTER TABLE public.platnosci OWNER TO postgres;
+
+--
+-- Name: platnosci_archiwum; Type: TABLE; Schema: public; Owner: postgres
+--
+
+CREATE TABLE public.platnosci_archiwum (
+    id_archiwum integer NOT NULL,
+    oryginalne_id_platnosci integer,
+    oryginalne_id_kursu integer,
+    kwota numeric(10,2),
+    data_platnosci date,
+    metoda_platnosci public.metoda_platnosci_enum,
+    tytul_platnosci text,
+    id_faktury character varying(50),
+    data_archiwizacji timestamp without time zone DEFAULT CURRENT_TIMESTAMP
+);
+
+
+ALTER TABLE public.platnosci_archiwum OWNER TO postgres;
+
+--
+-- Name: platnosci_archiwum_id_archiwum_seq; Type: SEQUENCE; Schema: public; Owner: postgres
+--
+
+CREATE SEQUENCE public.platnosci_archiwum_id_archiwum_seq
+    AS integer
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1;
+
+
+ALTER SEQUENCE public.platnosci_archiwum_id_archiwum_seq OWNER TO postgres;
+
+--
+-- Name: platnosci_archiwum_id_archiwum_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: postgres
+--
+
+ALTER SEQUENCE public.platnosci_archiwum_id_archiwum_seq OWNED BY public.platnosci_archiwum.id_archiwum;
+
+
+--
+-- Name: platnosci_id_platnosci_seq; Type: SEQUENCE; Schema: public; Owner: postgres
+--
+
+CREATE SEQUENCE public.platnosci_id_platnosci_seq
+    AS integer
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1;
+
+
+ALTER SEQUENCE public.platnosci_id_platnosci_seq OWNER TO postgres;
+
+--
+-- Name: platnosci_id_platnosci_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: postgres
+--
+
+ALTER SEQUENCE public.platnosci_id_platnosci_seq OWNED BY public.platnosci.id_platnosci;
+
+
+--
+-- Name: pojazd; Type: TABLE; Schema: public; Owner: postgres
+--
+
+CREATE TABLE public.pojazd (
+    id_pojazdu integer NOT NULL,
+    model_pojazdu text NOT NULL,
+    numer_rejestracyjny character varying(10) NOT NULL,
+    numer_vin character varying(20),
+    stan_techniczny text,
+    stan_paliwa integer,
+    data_waznosci_ubezpieczen date,
+    data_przegladu date,
+    rodzaj_skrzyni_biegow public.rodzaj_skrzyni_enum NOT NULL,
+    status_pojazdu public.status_pojazdu_enum DEFAULT 'Sprawny'::public.status_pojazdu_enum,
+    przebieg integer
+);
+
+
+ALTER TABLE public.pojazd OWNER TO postgres;
+
+--
+-- Name: pojazd_id_pojazdu_seq; Type: SEQUENCE; Schema: public; Owner: postgres
+--
+
+CREATE SEQUENCE public.pojazd_id_pojazdu_seq
+    AS integer
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1;
+
+
+ALTER SEQUENCE public.pojazd_id_pojazdu_seq OWNER TO postgres;
+
+--
+-- Name: pojazd_id_pojazdu_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: postgres
+--
+
+ALTER SEQUENCE public.pojazd_id_pojazdu_seq OWNED BY public.pojazd.id_pojazdu;
+
+
+--
+-- Name: przebieg_kursu; Type: TABLE; Schema: public; Owner: postgres
+--
+
+CREATE TABLE public.przebieg_kursu (
+    id_indywidualnego_kursu integer NOT NULL,
+    id_kursanta integer NOT NULL,
+    id_instruktora integer,
+    czy_oplacone boolean DEFAULT false,
+    status_kursu public.status_kursu_enum DEFAULT 'Rozpoczęty'::public.status_kursu_enum,
+    data_zapisu date DEFAULT CURRENT_DATE,
+    suma_godzin_teorii integer DEFAULT 0,
+    suma_godzin_praktyki integer DEFAULT 0,
+    czy_zdany_wew_teoria boolean DEFAULT false,
+    czy_zdany_wew_praktyka boolean DEFAULT false,
+    czy_zdany_zew_teoria boolean DEFAULT false,
+    czy_zdany_zew_praktyka boolean DEFAULT false
+);
+
+
+ALTER TABLE public.przebieg_kursu OWNER TO postgres;
+
+--
+-- Name: przebieg_kursu_archiwum; Type: TABLE; Schema: public; Owner: postgres
+--
+
+CREATE TABLE public.przebieg_kursu_archiwum (
+    id_archiwum integer NOT NULL,
+    oryginalne_id_kursu integer,
+    oryginalne_id_kursanta integer,
+    oryginalne_id_instruktora integer,
+    czy_oplacone boolean,
+    status_kursu public.status_kursu_enum,
+    data_zapisu date,
+    suma_godzin_teorii integer,
+    suma_godzin_praktyki integer,
+    czy_zdany_wew_teoria boolean,
+    czy_zdany_wew_praktyka boolean,
+    czy_zdany_zew_teoria boolean,
+    czy_zdany_zew_praktyka boolean,
+    data_archiwizacji timestamp without time zone DEFAULT CURRENT_TIMESTAMP
+);
+
+
+ALTER TABLE public.przebieg_kursu_archiwum OWNER TO postgres;
+
+--
+-- Name: przebieg_kursu_archiwum_id_archiwum_seq; Type: SEQUENCE; Schema: public; Owner: postgres
+--
+
+CREATE SEQUENCE public.przebieg_kursu_archiwum_id_archiwum_seq
+    AS integer
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1;
+
+
+ALTER SEQUENCE public.przebieg_kursu_archiwum_id_archiwum_seq OWNER TO postgres;
+
+--
+-- Name: przebieg_kursu_archiwum_id_archiwum_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: postgres
+--
+
+ALTER SEQUENCE public.przebieg_kursu_archiwum_id_archiwum_seq OWNED BY public.przebieg_kursu_archiwum.id_archiwum;
+
+
+--
+-- Name: przebieg_kursu_id_indywidualnego_kursu_seq; Type: SEQUENCE; Schema: public; Owner: postgres
+--
+
+CREATE SEQUENCE public.przebieg_kursu_id_indywidualnego_kursu_seq
+    AS integer
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1;
+
+
+ALTER SEQUENCE public.przebieg_kursu_id_indywidualnego_kursu_seq OWNER TO postgres;
+
+--
+-- Name: przebieg_kursu_id_indywidualnego_kursu_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: postgres
+--
+
+ALTER SEQUENCE public.przebieg_kursu_id_indywidualnego_kursu_seq OWNED BY public.przebieg_kursu.id_indywidualnego_kursu;
+
+
+--
+-- Name: v_pojazdy_do_serwisu; Type: VIEW; Schema: public; Owner: postgres
+--
+
+CREATE VIEW public.v_pojazdy_do_serwisu AS
+ SELECT model_pojazdu,
+    numer_rejestracyjny,
+    status_pojazdu,
+    przebieg,
+    data_przegladu,
+    data_waznosci_ubezpieczen,
+        CASE
+            WHEN (data_przegladu < CURRENT_DATE) THEN 'PRZEGLĄD PRZETERMINOWANY!'::text
+            WHEN ((data_przegladu >= CURRENT_DATE) AND (data_przegladu <= (CURRENT_DATE + 30))) THEN 'Przegląd wkrótce'::text
+            WHEN (data_waznosci_ubezpieczen < CURRENT_DATE) THEN 'BRAK UBEZPIECZENIA!'::text
+            WHEN ((data_waznosci_ubezpieczen >= CURRENT_DATE) AND (data_waznosci_ubezpieczen <= (CURRENT_DATE + 30))) THEN 'Ubezpieczenie wkrótce'::text
+            ELSE 'OK'::text
+        END AS uwaga_serwisowa
+   FROM public.pojazd
+  WHERE ((status_pojazdu = 'W serwisie'::public.status_pojazdu_enum) OR (data_przegladu < (CURRENT_DATE + 30)) OR (data_waznosci_ubezpieczen < (CURRENT_DATE + 30)));
+
+
+ALTER VIEW public.v_pojazdy_do_serwisu OWNER TO postgres;
+
+--
+-- Name: v_postepy_kursantow; Type: VIEW; Schema: public; Owner: postgres
+--
+
+CREATE VIEW public.v_postepy_kursantow AS
+ SELECT (((k.imie)::text || ' '::text) || (k.nazwisko)::text) AS kursant,
+    k.numer_pkk,
+    (((i.imie)::text || ' '::text) || (i.nazwisko)::text) AS instruktor,
+    pk.status_kursu,
+    pk.suma_godzin_teorii,
+    pk.suma_godzin_praktyki,
+        CASE
+            WHEN (pk.suma_godzin_praktyki >= 30) THEN 'Zakończona'::text
+            ELSE ((30 - pk.suma_godzin_praktyki) || ' h do wyjeżdżenia'::text)
+        END AS status_praktyki,
+    pk.czy_zdany_wew_teoria AS egz_wew_teoria,
+    pk.czy_zdany_wew_praktyka AS egz_wew_praktyka,
+    pk.czy_zdany_zew_praktyka AS egz_panstwowy
+   FROM ((public.przebieg_kursu pk
+     JOIN public.kursant k ON ((pk.id_kursanta = k.id_kursanta)))
+     LEFT JOIN public.instruktorzy i ON ((pk.id_instruktora = i.id_instruktora)))
+  ORDER BY pk.data_zapisu DESC;
+
+
+ALTER VIEW public.v_postepy_kursantow OWNER TO postgres;
+
+--
+-- Name: v_zaleglosci_platnicze; Type: VIEW; Schema: public; Owner: postgres
+--
+
+CREATE VIEW public.v_zaleglosci_platnicze AS
+ SELECT (((k.imie)::text || ' '::text) || (k.nazwisko)::text) AS kursant,
+    k.numer_telefonu,
+    pk.data_zapisu,
+    pk.status_kursu,
+    COALESCE(sum(p.kwota), (0)::numeric) AS wplacona_kwota
+   FROM ((public.przebieg_kursu pk
+     JOIN public.kursant k ON ((pk.id_kursanta = k.id_kursanta)))
+     LEFT JOIN public.platnosci p ON ((pk.id_indywidualnego_kursu = p.id_indywidualnego_kursu)))
+  WHERE ((pk.czy_oplacone = false) AND (pk.status_kursu = ANY (ARRAY['Rozpoczęty'::public.status_kursu_enum, 'W trakcie'::public.status_kursu_enum])))
+  GROUP BY k.id_kursanta, pk.id_indywidualnego_kursu, k.imie, k.nazwisko, k.numer_telefonu, pk.data_zapisu, pk.status_kursu;
+
+
+ALTER VIEW public.v_zaleglosci_platnicze OWNER TO postgres;
+
+--
+-- Name: instruktorzy id_instruktora; Type: DEFAULT; Schema: public; Owner: postgres
+--
+
+ALTER TABLE ONLY public.instruktorzy ALTER COLUMN id_instruktora SET DEFAULT nextval('public.instruktorzy_id_instruktora_seq'::regclass);
+
+
+--
+-- Name: kursant id_kursanta; Type: DEFAULT; Schema: public; Owner: postgres
+--
+
+ALTER TABLE ONLY public.kursant ALTER COLUMN id_kursanta SET DEFAULT nextval('public.kursant_id_kursanta_seq'::regclass);
+
+
+--
+-- Name: kursant_archiwum id_archiwum; Type: DEFAULT; Schema: public; Owner: postgres
+--
+
+ALTER TABLE ONLY public.kursant_archiwum ALTER COLUMN id_archiwum SET DEFAULT nextval('public.kursant_archiwum_id_archiwum_seq'::regclass);
+
+
+--
+-- Name: opiekun id_opiekuna; Type: DEFAULT; Schema: public; Owner: postgres
+--
+
+ALTER TABLE ONLY public.opiekun ALTER COLUMN id_opiekuna SET DEFAULT nextval('public.opiekun_id_opiekuna_seq'::regclass);
+
+
+--
+-- Name: opiekun_archiwum id_archiwum; Type: DEFAULT; Schema: public; Owner: postgres
+--
+
+ALTER TABLE ONLY public.opiekun_archiwum ALTER COLUMN id_archiwum SET DEFAULT nextval('public.opiekun_archiwum_id_archiwum_seq'::regclass);
+
+
+--
+-- Name: opinie id_opinii; Type: DEFAULT; Schema: public; Owner: postgres
+--
+
+ALTER TABLE ONLY public.opinie ALTER COLUMN id_opinii SET DEFAULT nextval('public.opinie_id_opinii_seq'::regclass);
+
+
+--
+-- Name: platnosci id_platnosci; Type: DEFAULT; Schema: public; Owner: postgres
+--
+
+ALTER TABLE ONLY public.platnosci ALTER COLUMN id_platnosci SET DEFAULT nextval('public.platnosci_id_platnosci_seq'::regclass);
+
+
+--
+-- Name: platnosci_archiwum id_archiwum; Type: DEFAULT; Schema: public; Owner: postgres
+--
+
+ALTER TABLE ONLY public.platnosci_archiwum ALTER COLUMN id_archiwum SET DEFAULT nextval('public.platnosci_archiwum_id_archiwum_seq'::regclass);
+
+
+--
+-- Name: pojazd id_pojazdu; Type: DEFAULT; Schema: public; Owner: postgres
+--
+
+ALTER TABLE ONLY public.pojazd ALTER COLUMN id_pojazdu SET DEFAULT nextval('public.pojazd_id_pojazdu_seq'::regclass);
+
+
+--
+-- Name: przebieg_kursu id_indywidualnego_kursu; Type: DEFAULT; Schema: public; Owner: postgres
+--
+
+ALTER TABLE ONLY public.przebieg_kursu ALTER COLUMN id_indywidualnego_kursu SET DEFAULT nextval('public.przebieg_kursu_id_indywidualnego_kursu_seq'::regclass);
+
+
+--
+-- Name: przebieg_kursu_archiwum id_archiwum; Type: DEFAULT; Schema: public; Owner: postgres
+--
+
+ALTER TABLE ONLY public.przebieg_kursu_archiwum ALTER COLUMN id_archiwum SET DEFAULT nextval('public.przebieg_kursu_archiwum_id_archiwum_seq'::regclass);
+
+
+--
+-- Data for Name: instruktorzy; Type: TABLE DATA; Schema: public; Owner: postgres
+--
+
+COPY public.instruktorzy (id_instruktora, id_pojazdu, imie, nazwisko, adres, numer_telefonu, email, data_waznosci_licencji) FROM stdin;
+1	37	Patric	Goldhill	6581 Maple Wood Street	312942924	pgoldhill0@trellian.com	2027-03-24
+2	2	Britteny	Coen	739 Northridge Court	006840095	bcoen1@smh.com.au	2027-08-11
+3	16	Sissy	Kimberley	18340 Pepper Wood Avenue	614031934	skimberley2@chronoengine.com	2027-11-13
+4	44	Munroe	Parmenter	28 Gulseth Lane	110133342	mparmenter3@printfriendly.com	2027-04-22
+5	3	Cozmo	Lawes	8 Lukken Circle	664980350	clawes4@yelp.com	2027-12-10
+6	4	Jerrie	Veasey	8146 Prentice Hill	808533149	jveasey5@blog.com	2027-03-31
+7	63	Larissa	Cammis	65 Ronald Regan Plaza	747338078	lcammis6@yolasite.com	2027-11-26
+8	42	Lucila	Witt	9445 Sunfield Alley	855044165	lwitt7@time.com	2027-06-28
+9	54	Moses	Ling	59972 Roth Place	309875946	mling8@cpanel.net	2027-06-19
+10	10	Clemente	Pakeman	7 Express Park	605998308	cpakeman9@zimbio.com	2027-06-13
+11	16	Natassia	Davidi	4539 Anderson Avenue	737614318	ndavidia@fotki.com	2027-11-22
+12	56	Zach	Seville	705 Hollow Ridge Court	479548379	zsevilleb@smh.com.au	2027-06-01
+13	72	Lucine	Agar	9 Spaight Pass	628279768	lagarc@pen.io	2027-07-24
+14	68	Marius	Goaks	1755 Union Terrace	536723079	mgoaksd@geocities.jp	2026-12-31
+15	5	Matti	Stoeck	34 Kim Plaza	159425152	mstoecke@omniture.com	2027-10-29
+16	58	Allyn	Philips	33 Luster Drive	753436542	aphilipsf@epa.gov	2027-11-16
+17	97	Kenna	Lorente	5 Surrey Junction	207729040	klorenteg@disqus.com	2027-03-02
+18	18	La verne	Poxton	156 Express Court	388871855	lpoxtonh@ning.com	2027-03-25
+19	10	Wendall	Challenor	48 Ryan Avenue	321867311	wchallenori@ocn.ne.jp	2027-08-25
+20	56	Johnette	Budd	7 Lawn Drive	391599437	jbuddj@themeforest.net	2027-01-16
+\.
+
+
+--
+-- Data for Name: kursant; Type: TABLE DATA; Schema: public; Owner: postgres
+--
+
+COPY public.kursant (id_kursanta, imie, nazwisko, pesel, adres, numer_telefonu, email, data_urodzenia, zgoda_marketingowa, numer_pkk, data_wydania_pkk, status_pkk, badania_lekarskie, data_waznosci_badan) FROM stdin;
+1	Stafani	Phidgin	49961727160	0255 Mesta Place	369720236	jphidgin0@google.com	1983-08-13	f	92950491867047582948	2025-10-28	Aktywny	\N	2026-11-20
+2	Harrie	Chastand	93651975531	73 Summit Plaza	049064480	gchastand1@prweb.com	1981-10-27	t	10748980660928735262	2025-10-26	Wykorzystany	f	2026-10-19
+3	Darcee	Neljes	21198339797	7 Fallview Pass	105875442	lneljes2@xing.com	1996-11-17	\N	67794867391596850647	2025-09-13	\N	f	2026-11-13
+4	Tonya	Gratrex	67940302305	26 Manley Avenue	556764106	vgratrex3@sciencedirect.com	1985-01-17	f	32053859008956461436	2025-11-27	\N	f	2026-10-20
+5	Tiphanie	Dafydd	74676766675	1 Holmberg Lane	969462152	sdafydd4@theguardian.com	1978-08-04	\N	96540562717100803234	2025-09-28	Aktywny	\N	2026-09-27
+6	Elka	Piche	71931179293	77 Crowley Circle	468385394	tpiche5@imageshack.us	2004-05-01	\N	85226251620001034469	2025-10-30	\N	\N	2026-11-17
+7	Peggy	Pedlow	71832924038	230 Randy Place	408055553	gpedlow6@europa.eu	2000-10-03	t	76248100148926521925	2025-12-03	Aktywny	\N	2026-10-28
+8	Josephine	Poulter	13059993982	83 Arrowood Crossing	256165222	apoulter7@dailymotion.com	1983-12-10	f	43486464066240037937	2025-11-17	Aktywny	\N	2026-10-04
+9	Llewellyn	Wharby	12927640862	0 Boyd Center	973777870	lwharby8@storify.com	1995-09-19	\N	61739521884891355296	2025-12-08	\N	\N	2026-10-17
+10	Tannie	Hellen	13233077438	93189 Quincy Road	137094318	dhellen9@odnoklassniki.ru	1979-12-28	t	56099850816160510309	2025-09-15	\N	\N	2026-11-14
+11	Ania	Leopard	46345457549	9 Banding Street	097405334	bleoparda@fema.gov	1983-08-05	t	92727790525820656413	2025-11-08	Aktywny	t	2026-09-22
+12	Claudie	Cockson	85577513737	04665 Helena Park	553120156	kcocksonb@google.pl	2002-03-04	f	45012635849799900615	2025-11-03	Aktywny	t	2026-11-26
+13	Lia	Raoult	90663254101	381 Meadow Valley Circle	733528116	traoultc@jiathis.com	1995-04-17	f	46520683587581266036	2025-12-07	Zablokowany	\N	2026-11-14
+14	Drew	Kubicek	92843580444	91482 Grayhawk Place	174000982	skubicekd@cbslocal.com	1977-02-26	\N	16533012181770329039	2025-10-23	\N	t	2026-11-16
+15	Juliette	Patise	06392010056	1 Drewry Lane	172394870	lpatisee@t.co	1983-09-21	f	47916489989202268653	2025-12-11	Wykorzystany	t	2026-11-10
+16	Vittoria	Twine	16051703781	1 Lunder Circle	977897861	ctwinef@homestead.com	1978-03-19	f	10845974220528760523	2025-11-12	Wykorzystany	f	2026-12-12
+17	Corabelle	Chittenden	68216382510	21326 Transport Park	047283483	dchittendeng@irs.gov	1977-12-12	\N	92079122430531843123	2025-09-19	\N	\N	2026-09-30
+18	Ernest	Plevin	21624934965	80 Birchwood Center	315174567	eplevinh@last.fm	1989-12-19	t	54473635979376343477	2025-12-01	Wykorzystany	f	2026-12-08
+19	Quintana	Broggio	03598111526	917 Comanche Alley	433408682	fbroggioi@nationalgeographic.com	1996-10-13	\N	64150602731576469224	2025-11-30	Aktywny	f	2026-10-14
+20	Farra	Rodenburg	26523260171	94720 Caliangt Drive	465441502	qrodenburgj@tuttocitta.it	2004-10-04	t	18221335179034393376	2025-12-07	Aktywny	f	2026-09-25
+21	Broderic	Scopham	22379192340	01799 Saint Paul Lane	942575462	cscophamk@europa.eu	1982-10-24	\N	96495065584763915124	2025-10-06	Aktywny	t	2026-11-18
+22	Lion	Cossor	52415992175	28948 Annamark Alley	275329373	jcossorl@mapquest.com	1979-06-22	\N	87909406287560647319	2025-11-22	Aktywny	\N	2026-10-10
+23	Englebert	MacCall	88347141885	234 Marquette Point	995462724	dmaccallm@nps.gov	2004-03-31	\N	25392969282575328972	2025-09-20	\N	t	2026-10-12
+24	Jory	Cometson	07978675144	38637 Caliangt Center	142487998	rcometsonn@answers.com	1999-10-30	t	15680574625696274892	2025-12-10	Aktywny	t	2026-11-23
+25	Jo ann	Hazeman	78425264570	0 Coleman Parkway	177902346	thazemano@nih.gov	1988-06-06	f	35061776859006830668	2025-10-11	\N	\N	2026-09-20
+26	Gordie	Sargent	69161091106	4 Oriole Lane	886028786	csargentp@example.com	1979-09-15	f	13765042275296338783	2025-11-15	Aktywny	\N	2026-11-05
+27	Chelsie	Hannum	69760867695	303 Myrtle Way	865142386	jhannumq@cdc.gov	1994-12-05	t	27945301399737239437	2025-10-23	\N	f	2026-10-06
+28	Ally	Troutbeck	53020573153	77322 Monterey Parkway	770455782	mtroutbeckr@instagram.com	1978-03-10	t	24200879810879128110	2025-10-16	\N	\N	2026-11-10
+29	Merry	Bastin	69546227032	765 Little Fleur Drive	836135367	kbastins@imageshack.us	1979-06-03	t	59054219475872387162	2025-10-08	Aktywny	\N	2026-10-21
+30	Priscella	Fryatt	13281503205	34829 Truax Park	885242750	mfryattt@chron.com	1992-06-15	\N	79721126978441216795	2025-10-06	\N	\N	2026-09-14
+31	Gianina	Puvia	49664716850	17791 Dottie Trail	986576562	jpuviau@earthlink.net	1977-06-14	t	35336028337198884093	2025-11-17	\N	f	2026-12-08
+32	Garrott	Tovey	27194885607	76890 Commercial Street	742120724	etoveyv@github.com	1993-01-10	\N	33938026482128723927	2025-10-03	\N	f	2026-09-26
+33	Care	Antonoyev	31995606342	573 Burrows Crossing	666549660	tantonoyevw@phoca.cz	1981-01-28	f	44826380775603511765	2025-09-21	\N	\N	2026-09-26
+34	Chad	Mercik	17208647905	4 Evergreen Point	752419319	lmercikx@prnewswire.com	2008-10-16	\N	52734126464652111285	2025-10-19	\N	f	2026-09-13
+35	Dredi	Philpott	70659499199	849 Vahlen Place	762008604	kphilpotty@fda.gov	1976-04-26	t	76524191335358076546	2025-10-12	Aktywny	t	2026-09-17
+36	Kendall	Pledge	20119301683	8222 Loeprich Center	820040612	apledgez@bloomberg.com	1994-01-21	\N	22986624223043492197	2025-09-20	\N	t	2026-11-16
+37	Catlin	Nelius	89304553979	710 Laurel Alley	132297719	wnelius10@addtoany.com	2008-02-26	t	46784780983105918191	2025-09-14	Aktywny	\N	2026-10-06
+38	Pren	Feria	55443791456	5 Oxford Parkway	071057257	kferia11@paypal.com	1979-07-17	t	94015031999068230556	2025-10-08	Aktywny	t	2026-09-30
+39	Maurita	Nolleau	48450363564	1 North Circle	185407251	snolleau12@dyndns.org	1988-05-21	f	48202443957468124278	2025-10-10	\N	f	2026-11-10
+40	Sherry	Hebner	51191858409	45 8th Pass	133430671	rhebner13@google.ru	2001-03-16	\N	25456230771088175164	2025-10-29	Aktywny	f	2026-11-24
+41	Lazare	Castella	75226039200	653 Mcbride Lane	886309010	bcastella14@fastcompany.com	1990-06-21	t	98105344782816767398	2025-09-13	\N	\N	2026-10-11
+42	Bartholemy	While	27280673101	201 Old Gate Way	179759793	ywhile15@eventbrite.com	2008-11-06	t	65995833802168967677	2025-10-29	\N	t	2026-11-26
+43	Currey	Gonthard	88672173379	0369 2nd Place	423966497	cgonthard16@theglobeandmail.com	1988-10-14	f	74423139169216263698	2025-10-02	\N	\N	2026-10-18
+44	Levi	Arpino	18571547481	465 Nelson Place	034061246	sarpino17@kickstarter.com	1995-08-02	f	74404049148202059405	2025-11-02	Aktywny	t	2026-11-19
+45	Roberto	Reedman	76939645785	19 Kingsford Park	864313489	mreedman18@google.ca	1976-12-07	t	46410697407462496753	2025-11-04	Aktywny	t	2026-09-23
+46	Meredithe	Di Claudio	81557672193	67 Sloan Hill	704636796	mdiclaudio19@engadget.com	1992-02-23	t	64204831794021811663	2025-09-30	\N	t	2026-11-03
+47	Cherie	Capelle	37400510252	62 School Avenue	562536731	qcapelle1a@google.cn	1976-07-12	f	27921954490588337638	2025-09-22	Aktywny	t	2026-11-09
+48	Griz	Jenne	68888129343	7511 Northland Junction	539150425	kjenne1b@e-recht24.de	1988-04-17	t	29428219118728562560	2025-09-26	Aktywny	\N	2026-10-11
+49	Evelyn	Smedmoor	14710210147	50 Chinook Way	039213718	esmedmoor1c@networkadvertising.org	1992-06-16	t	58898698048646021893	2025-09-29	\N	f	2026-10-07
+50	Henry	Geggus	13539891019	202 Buhler Park	829325986	cgeggus1d@google.ru	1991-05-20	t	64849811467545960293	2025-11-14	\N	\N	2026-10-21
+51	Tymothy	Bergin	96141223392	265 Pleasure Crossing	848597584	rbergin1e@google.pl	1996-09-27	\N	84226047270103743590	2025-12-10	Zablokowany	f	2026-10-04
+52	Benedict	Klimus	03511267950	98 Banding Center	972115120	sklimus1f@nih.gov	1982-10-31	\N	58125267351888702177	2025-11-22	Aktywny	\N	2026-09-22
+53	Christoper	Fiveash	73215856721	94459 Kings Circle	846678808	hfiveash1g@addtoany.com	1997-09-23	\N	99648642956237691501	2025-11-03	Aktywny	\N	2026-09-30
+54	Con	Durn	18298760363	1 Pleasure Lane	788850019	ndurn1h@japanpost.jp	1978-10-16	\N	14390510565411163265	2025-10-19	Aktywny	\N	2026-10-08
+55	Jorgan	Fairhurst	90287305219	25 Southridge Parkway	268800968	jfairhurst1i@skyrock.com	1986-12-02	f	21192420739017079811	2025-11-21	Aktywny	t	2026-12-01
+56	Ketti	Simonian	74119125750	95612 Grasskamp Place	514286155	csimonian1j@pagesperso-orange.fr	1981-02-16	\N	74952784925172223609	2025-11-27	\N	t	2026-11-14
+57	Amelia	Oliveto	64257655917	266 Raven Parkway	934851960	eoliveto1k@msu.edu	2006-09-27	t	44551282994012780214	2025-12-06	Aktywny	t	2026-11-21
+58	Sven	Worman	31514795543	0 Schiller Hill	830255412	cworman1l@forbes.com	2007-11-10	\N	80853005012697984435	2025-11-28	Aktywny	\N	2026-11-07
+59	Fiona	Whiting	37995331813	2221 Lyons Hill	616988140	fwhiting1m@apache.org	1995-10-25	t	32273533909641435623	2025-12-10	Aktywny	\N	2026-12-09
+60	Dorry	Keeton	50645281077	71984 Dayton Court	787417905	vkeeton1n@dell.com	2003-01-08	f	83377775861747891681	2025-11-21	\N	\N	2026-10-30
+61	Maryjane	Buncombe	91421608603	5910 Continental Lane	429018862	jbuncombe1o@umich.edu	1984-12-30	t	05409682329356673888	2025-11-19	\N	t	2026-09-21
+62	Jocko	Elder	69259072977	5312 Forest Run Alley	199101539	gelder1p@fotki.com	2008-09-27	t	25658166560099330717	2025-11-01	\N	f	2026-10-20
+63	Jenica	Simak	06210228954	53267 Monument Pass	434281254	jsimak1q@stumbleupon.com	1996-06-09	t	66172515350559242561	2025-10-25	Aktywny	\N	2026-12-12
+64	Jordon	By	50666948190	0 Brickson Park Crossing	785548951	mby1r@amazon.com	1991-09-06	\N	66945730259705851462	2025-12-09	Zablokowany	t	2026-10-30
+65	Noelani	Kuhlmey	47478321974	17345 Park Meadow Plaza	853108508	ekuhlmey1s@imdb.com	2000-09-03	t	18750990576420169726	2025-12-01	\N	\N	2026-10-08
+66	Keely	Rowena	76551395901	394 Jana Street	383157923	trowena1t@huffingtonpost.com	1999-10-20	f	51056452729478752547	2025-11-17	Aktywny	f	2026-10-23
+67	Holden	Joselson	77527101347	41 Grasskamp Hill	236278681	jjoselson1u@kickstarter.com	1994-05-13	f	45602151586346987129	2025-12-10	\N	\N	2026-12-12
+68	Brock	Primarolo	43560888496	0 5th Trail	625707593	dprimarolo1v@blinklist.com	1992-09-28	f	63058706224277791085	2025-11-05	Aktywny	\N	2026-09-29
+69	Heriberto	Saunders	72792026671	29 Bunting Plaza	333274645	jsaunders1w@arizona.edu	1976-03-02	\N	21300548162426465283	2025-09-20	\N	t	2026-10-12
+70	Gayle	Dutteridge	32488146496	36 Melody Junction	751841436	adutteridge1x@yahoo.com	1991-02-07	t	72668856932684062220	2025-12-08	\N	\N	2026-11-04
+71	Bartolemo	Mattevi	86740762297	0102 Forest Run Junction	338221511	amattevi1y@altervista.org	2004-11-11	f	88878292239645418350	2025-10-05	Wykorzystany	\N	2026-10-11
+72	Linnet	Tesmond	81502531973	52 Kinsman Center	615741858	atesmond1z@dot.gov	1994-12-28	f	40323513256958491885	2025-11-21	Aktywny	f	2026-10-16
+73	Lorena	Duerdin	77883053097	64 Michigan Drive	191454271	bduerdin20@house.gov	1992-06-28	\N	13051997499049436775	2025-10-18	Aktywny	\N	2026-09-16
+74	Scott	Follin	20597563904	32679 Manley Alley	183284456	gfollin21@addtoany.com	1999-06-12	\N	59367039570928857035	2025-10-07	Aktywny	f	2026-10-14
+75	Alphard	Graves	65422319262	70 Russell Junction	059022790	ggraves22@thetimes.co.uk	1998-01-02	\N	47731584194689062878	2025-11-24	Wykorzystany	\N	2026-09-26
+76	Kassey	Killby	30940156355	9 Tomscot Hill	422250949	ekillby23@1und1.de	2005-05-19	f	98999225891637805797	2025-11-15	Aktywny	t	2026-11-07
+77	Wright	Hairs	17819523307	324 Shelley Place	732609754	fhairs24@who.int	1986-05-22	t	04539040158533050548	2025-11-25	Wykorzystany	\N	2026-11-30
+78	Bartram	Grannell	80378236145	7 Talmadge Center	335948357	sgrannell25@odnoklassniki.ru	1985-05-09	t	67446867352336528363	2025-10-16	\N	\N	2026-10-02
+79	Delbert	Crady	51100449480	798 Hansons Point	621626196	ncrady26@sourceforge.net	1992-09-25	\N	04368470782696180443	2025-10-19	\N	t	2026-12-10
+80	Stephi	Soanes	96704155079	4 Northfield Terrace	711982547	bsoanes27@webmd.com	2002-12-12	t	48917567891957355651	2025-12-06	Wykorzystany	t	2026-10-28
+81	Kelli	Springthorp	82564481925	86 Truax Point	085789015	bspringthorp28@arstechnica.com	1984-08-07	t	23230115374141162990	2025-11-06	Aktywny	f	2026-11-06
+82	Cherise	Dennett	91114701258	95 Randy Terrace	773091661	pdennett29@patch.com	1983-06-14	\N	43427988630282469188	2025-09-17	\N	\N	2026-09-19
+83	Karyl	MacDonell	66209597356	408 Blue Bill Park Alley	169528666	kmacdonell2a@auda.org.au	1991-01-15	t	28784286081733788139	2025-10-17	Aktywny	t	2026-09-27
+84	Petr	Curuclis	18806831033	0228 Burning Wood Way	316503704	gcuruclis2b@biblegateway.com	1993-12-13	\N	16145247449617832256	2025-11-30	\N	f	2026-10-07
+85	Haydon	Clougher	85234975469	0 Arkansas Junction	127102683	eclougher2c@hhs.gov	2002-12-26	f	02550963858446368486	2025-10-31	\N	t	2026-09-22
+86	Biddy	Cowdroy	97226552745	047 6th Crossing	985974065	mcowdroy2d@sohu.com	1991-11-06	t	99316891491898590973	2025-10-03	\N	t	2026-11-03
+87	Robbi	Fries	80979028490	1234 Scofield Plaza	439185660	cfries2e@ibm.com	2000-05-19	f	89341083379644163571	2025-10-25	Zablokowany	f	2026-10-01
+88	Rikki	Natalie	31528614828	5060 Main Point	518774220	anatalie2f@printfriendly.com	1998-04-03	\N	95379024353494273959	2025-11-14	Zablokowany	t	2026-12-02
+89	Gaby	Dance	98445738332	9 Prentice Street	687223519	adance2g@cmu.edu	2001-10-06	t	95736734399207451340	2025-10-08	Aktywny	\N	2026-11-20
+90	Janessa	Coultard	26268617194	0603 Sutteridge Park	055795096	acoultard2h@ycombinator.com	1981-06-10	\N	33452889635926965547	2025-10-18	Aktywny	t	2026-12-10
+91	Daryle	Reardon	89865153201	2887 Fuller Terrace	625522356	kreardon2i@ucla.edu	1979-05-17	\N	34612980004182843080	2025-10-18	Aktywny	t	2026-12-06
+92	Issy	Dawidowitz	33118014219	9688 Knutson Junction	243820115	kdawidowitz2j@ezinearticles.com	1989-10-19	f	89177435968965997499	2025-09-25	\N	t	2026-09-23
+93	Moreen	Steanyng	98845960425	4 Mallory Hill	380171643	lsteanyng2k@furl.net	2001-08-10	t	05743524766934481504	2025-12-02	Aktywny	f	2026-09-18
+94	Ingaborg	Liepmann	60634296756	25 Fairfield Way	439633455	cliepmann2l@wiley.com	1994-12-29	t	58614839987786410566	2025-12-06	Aktywny	\N	2026-10-06
+95	Carlyn	Pfeuffer	92470553088	8190 Brentwood Way	629174808	ypfeuffer2m@privacy.gov.au	1998-01-23	\N	17684203990705715596	2025-11-12	Aktywny	t	2026-09-16
+96	Cosette	Pinnock	99973215825	260 Springview Pass	078343933	ypinnock2n@chronoengine.com	1998-11-25	f	39190879761072310348	2025-09-25	\N	t	2026-11-24
+97	Ruben	Pugh	89206839857	7723 Pepper Wood Point	016221517	rpugh2o@symantec.com	2006-04-14	f	16239243811204223805	2025-10-07	Aktywny	f	2026-11-25
+98	Terza	Hallett	48806610448	2 Milwaukee Court	988668516	ahallett2p@furl.net	1979-10-03	f	91665685979731613680	2025-10-24	Wykorzystany	t	2026-10-28
+99	Storm	Sudran	67961921782	226 Corben Circle	947167677	msudran2q@timesonline.co.uk	1986-02-07	t	99820430678784847970	2025-10-12	\N	t	2026-09-27
+100	Zed	Elix	28393985424	98120 Mallory Avenue	272578906	melix2r@geocities.com	1990-10-06	f	25546840041261674445	2025-12-11	Aktywny	\N	2026-11-12
+101	Wallas	Cattellion	88775169107	62 Westport Hill	044523463	ccattellion2s@archive.org	1987-09-12	\N	70964356808620514052	2025-11-12	Wykorzystany	f	2026-09-30
+102	Cherianne	Hargie	85095930576	0420 Sloan Way	131586918	shargie2t@delicious.com	1983-07-04	t	13975675605528648967	2025-09-29	Aktywny	t	2026-09-25
+103	Norrie	Vakhrushev	71229260523	88 Veith Parkway	015510681	dvakhrushev2u@privacy.gov.au	2004-01-06	\N	58883414973206236911	2025-11-19	Aktywny	t	2026-10-10
+104	Prisca	Jertz	30789864003	34 Heffernan Lane	326031417	djertz2v@cyberchimps.com	1976-05-25	\N	86242708096744846577	2025-10-07	Aktywny	t	2026-10-30
+105	Rex	Stachini	00032477897	847 Morrow Crossing	741985916	dstachini2w@oakley.com	2008-11-29	\N	09130259081806029460	2025-11-03	Wykorzystany	t	2026-11-12
+106	Waverly	Vasilov	25356924014	42551 Buena Vista Trail	082723120	mvasilov2x@illinois.edu	2001-08-18	f	41244576253366723626	2025-09-15	\N	f	2026-09-16
+107	Lionello	Moreno	55825463068	03982 Parkside Plaza	202056683	cmoreno2y@posterous.com	1990-05-09	t	69312705318321646248	2025-10-06	Zablokowany	\N	2026-10-28
+108	Nikolia	Till	49510998238	0829 Kinsman Center	511468210	mtill2z@bloglines.com	1987-01-23	\N	05118071675457386069	2025-09-13	Wykorzystany	f	2026-09-16
+109	Tuckie	Eckh	79791470503	1 Upham Park	112350567	reckh30@shareasale.com	1986-09-01	t	85047440509208268986	2025-09-19	\N	f	2026-09-30
+110	Winifred	Beedon	63624489631	26356 Oak Crossing	960446955	fbeedon31@mail.ru	2006-09-11	t	03999779344656393167	2025-09-22	Aktywny	t	2026-09-16
+111	Randene	Zuenelli	62226292926	18 Hovde Lane	010933678	szuenelli32@deliciousdays.com	1994-11-21	f	88812051401583996734	2025-12-11	\N	\N	2026-09-14
+112	Tallie	Tummasutti	52291871391	8 Petterle Parkway	363426367	mtummasutti33@odnoklassniki.ru	1983-03-13	\N	61329587856560964938	2025-09-20	Aktywny	t	2026-10-31
+113	Abigail	Yusupov	99225061977	06574 Chinook Court	119468198	cyusupov34@eventbrite.com	1990-04-18	t	71404881014509347698	2025-10-20	Aktywny	\N	2026-10-05
+114	Olimpia	Earland	51418225102	896 Roxbury Street	939401760	mearland35@state.tx.us	2007-03-27	t	95288671517295365208	2025-09-27	Wykorzystany	\N	2026-10-03
+115	Kory	Moncreiffe	94319820137	68 David Alley	626905208	fmoncreiffe36@state.gov	1991-02-24	\N	36480840368720782415	2025-11-25	Aktywny	f	2026-11-07
+116	Isa	Palfree	68449990135	038 Crowley Avenue	248568609	jpalfree37@moonfruit.com	1984-03-30	f	72438924136609960522	2025-12-05	Wykorzystany	\N	2026-11-02
+117	Elston	Klas	81568009808	08791 Eastwood Hill	316644976	nklas38@sciencedirect.com	1978-03-05	\N	65913513200594630674	2025-11-08	\N	f	2026-09-26
+118	Aron	McQuaid	13004597046	74327 Walton Junction	192742369	cmcquaid39@indiatimes.com	1997-10-07	t	86794983193950455591	2025-12-05	\N	t	2026-12-11
+119	Chalmers	Stert	05843440957	03 Blue Bill Park Street	731872226	sstert3a@tripod.com	1997-05-31	\N	09734844011666267354	2025-10-24	Zablokowany	\N	2026-11-17
+120	Jocelyne	Kilshaw	87728140703	03850 Charing Cross Park	676431342	gkilshaw3b@cdbaby.com	2000-04-25	f	07893985041702568544	2025-10-18	\N	\N	2026-10-25
+121	Barb	Arrighini	77752598990	63 Starling Parkway	358450000	darrighini3c@nymag.com	2005-08-09	t	24937653237372061378	2025-11-01	Aktywny	\N	2026-09-27
+122	Antonio	Eyeington	33689934538	940 Forster Avenue	209593573	beyeington3d@scientificamerican.com	1996-03-17	\N	38557084710532755051	2025-12-10	\N	\N	2026-11-22
+123	Peter	Trenaman	84369977592	94877 Welch Terrace	846753245	jtrenaman3e@goo.gl	2003-03-10	\N	30768272598929387171	2025-11-13	Wykorzystany	t	2026-10-03
+124	Edgar	Prattin	61061750916	588 Fair Oaks Point	734810729	kprattin3f@cmu.edu	1980-03-25	\N	09828100996467994203	2025-09-29	Aktywny	\N	2026-11-30
+125	Nye	Tompkins	39309241442	14551 Bobwhite Alley	892864904	atompkins3g@flickr.com	2008-04-01	f	33406041712408582824	2025-10-12	Aktywny	\N	2026-11-30
+126	Rubetta	Nutkins	72617846792	57044 Straubel Road	550530556	enutkins3h@mozilla.com	1985-05-23	t	52521725296517277249	2025-11-12	Zablokowany	\N	2026-12-04
+127	Adelaida	Jenton	75102049484	192 Corry Pass	724706586	kjenton3i@npr.org	2005-05-13	\N	32295836759609880958	2025-10-08	\N	f	2026-12-01
+128	Carlie	Mortel	15684524438	28 Vermont Trail	323886855	smortel3j@answers.com	2007-12-25	t	35110216973762805815	2025-10-28	Aktywny	\N	2026-09-16
+129	Sam	Dunston	96225359828	4220 Coolidge Terrace	616696515	ndunston3k@google.it	1983-07-12	\N	81464268110129669348	2025-10-22	Wykorzystany	t	2026-11-25
+130	Brandice	Blyth	62939788134	858 Birchwood Drive	091704223	cblyth3l@skype.com	1995-06-16	f	24994564058717170585	2025-10-23	Aktywny	t	2026-11-01
+131	Marj	Meininger	22543460043	087 Harbort Park	628014926	gmeininger3m@economist.com	1994-04-01	\N	38126335727773641531	2025-11-20	Aktywny	f	2026-09-28
+132	Lissi	Bilbrooke	60605315389	806 Rowland Road	281524849	bbilbrooke3n@1und1.de	1992-11-26	f	97167710170301151056	2025-10-04	\N	f	2026-10-06
+133	Jareb	Bartolomivis	26796922985	83 Acker Terrace	715864863	sbartolomivis3o@nature.com	2004-04-19	t	98068131779498985988	2025-10-05	Aktywny	t	2026-09-28
+134	Jonell	Jaulme	47706180012	56 Reindahl Hill	985172294	cjaulme3p@typepad.com	2003-03-13	\N	94114388149016698310	2025-09-26	\N	f	2026-09-15
+135	Dion	Tailour	67464076405	09 Autumn Leaf Place	779069587	stailour3q@pagesperso-orange.fr	1999-08-01	t	85652212820464158187	2025-12-02	Aktywny	\N	2026-10-18
+136	Ekaterina	Lomax	75419825794	18 Swallow Way	517668667	dlomax3r@usda.gov	1996-12-12	t	90190467220306851900	2025-12-12	\N	f	2026-11-21
+137	Rosie	Erangy	82673618594	02 Summit Road	272152130	terangy3s@tamu.edu	1992-10-18	f	16036096266628890383	2025-10-26	Aktywny	f	2026-11-29
+138	Zara	Trouel	27179105609	4063 Oak Parkway	701381623	atrouel3t@japanpost.jp	1980-05-24	\N	08762515808764750584	2025-10-28	\N	t	2026-10-13
+139	Baryram	Hollyar	88438730634	39 Mcguire Lane	471473990	shollyar3u@cpanel.net	1977-05-24	t	88969985826042091312	2025-09-20	Aktywny	t	2026-11-21
+140	Cayla	Derdes	98922072352	13 Center Avenue	118600730	tderdes3v@t.co	1990-07-19	t	06943045523105086996	2025-11-20	Aktywny	t	2026-11-11
+141	Indira	McCutcheon	11437225020	8 Bowman Lane	535225348	jmccutcheon3w@livejournal.com	1987-08-11	f	34725843080374123756	2025-11-20	Zablokowany	t	2026-09-23
+142	Alberta	Fullard	33739951329	32352 Sundown Court	786331039	jfullard3x@google.ca	1994-07-01	t	92038985685988778483	2025-10-07	\N	t	2026-10-13
+143	Dix	Klus	40022914847	56524 Forest Street	197308887	hklus3y@sun.com	1978-03-24	t	28940592039246702767	2025-09-24	Aktywny	t	2026-11-26
+144	Gordie	Gontier	99782502028	69 Mendota Crossing	343599322	bgontier3z@jugem.jp	1984-05-14	t	32748934514327657031	2025-10-31	\N	f	2026-10-23
+145	Donnell	Portwain	60005188550	4086 Anniversary Hill	343623650	gportwain40@ovh.net	1992-09-27	\N	96358639785745210751	2025-12-09	Aktywny	f	2026-10-04
+146	Denys	Farmiloe	89357759053	19929 Tennyson Park	214713710	afarmiloe41@bigcartel.com	1992-04-14	\N	84515986977783925258	2025-09-20	\N	f	2026-11-03
+147	Stanley	Gosz	35560762035	609 Anniversary Hill	159012698	ggosz42@typepad.com	1999-11-07	t	72139568569934407079	2025-11-06	\N	t	2026-11-10
+148	Ugo	Smail	74512758218	54633 Alpine Center	224210733	msmail43@washingtonpost.com	2000-09-05	\N	76207719425381382243	2025-11-25	Aktywny	f	2026-11-18
+149	Johnette	Bachanski	11649826980	4067 Badeau Point	952545078	jbachanski44@imageshack.us	1990-07-24	\N	10821161285313416871	2025-09-18	Aktywny	f	2026-10-05
+150	Way	Cape	73328937931	9463 Ridgeway Avenue	683280944	fcape45@nyu.edu	2008-12-01	f	83219772692994673918	2025-10-26	\N	t	2026-10-22
+151	Bernhard	Calder	29462770220	54 Graceland Trail	916696990	bcalder46@skyrock.com	1997-11-20	\N	73686783545516187379	2025-12-03	\N	\N	2026-10-23
+152	Peria	Salvage	65518080541	98002 Shoshone Drive	111169342	csalvage47@mtv.com	2004-03-07	\N	76369576602046054152	2025-11-15	Wykorzystany	f	2026-10-06
+153	Tilda	Boot	06864088280	1 Red Cloud Park	651885905	mboot48@craigslist.org	1977-04-20	\N	05819970463469910885	2025-11-09	\N	\N	2026-10-12
+154	Grethel	Scone	03593006004	5781 Brentwood Lane	165924805	gscone49@ebay.com	1988-06-15	f	83078390271422662964	2025-12-02	Aktywny	\N	2026-12-06
+155	Laney	Coppenhall	05849792078	1 Eggendart Point	820196226	icoppenhall4a@edublogs.org	1995-07-12	f	19570294730706866886	2025-10-23	Aktywny	\N	2026-09-28
+156	Dorian	Blum	02069442151	1 Del Sol Court	588467805	bblum4b@usatoday.com	1981-04-16	f	08451025965151748364	2025-09-24	\N	\N	2026-12-01
+157	Bertha	Tofano	10128982933	1162 Rusk Street	047232285	rtofano4c@123-reg.co.uk	1985-02-10	\N	56299447355587231269	2025-10-18	Wykorzystany	f	2026-10-17
+158	Georgie	Glynne	87651529495	31 Longview Junction	814787787	rglynne4d@tiny.cc	1986-12-23	\N	24323991629972492140	2025-11-17	\N	t	2026-10-17
+159	Jana	Bardell	12917544853	8134 Magdeline Hill	773656381	mbardell4e@mozilla.com	1989-09-05	f	52488028007165184664	2025-12-01	Aktywny	\N	2026-09-23
+160	Hedvig	Yerborn	59321179981	352 Hanson Avenue	541933384	pyerborn4f@ihg.com	1976-03-11	f	47258269186971362305	2025-11-19	Zablokowany	\N	2026-11-08
+161	Waylen	Grayne	98697461445	4 Cambridge Pass	011368431	tgrayne4g@yale.edu	1994-04-01	\N	04559136754352884660	2025-12-03	Aktywny	f	2026-11-24
+162	Nikki	Disbury	46788542710	4069 Bobwhite Terrace	202414057	edisbury4h@indiegogo.com	2003-02-03	t	47102709136481100421	2025-11-11	Aktywny	f	2026-11-22
+163	Hardy	Buntine	38267894670	1580 Graedel Pass	506296579	cbuntine4i@usa.gov	1983-08-05	f	68047995484013342414	2025-10-20	Aktywny	\N	2026-09-18
+164	Sally	de Mendoza	49589772872	45 South Hill	635351523	tdemendoza4j@soundcloud.com	1982-10-12	\N	93227413659349409543	2025-09-16	\N	f	2026-09-19
+165	Westleigh	Charlesworth	16542700891	17 Pond Junction	954459239	bcharlesworth4k@foxnews.com	1987-08-15	t	57535941171094442933	2025-10-09	Zablokowany	\N	2026-10-19
+166	Clementine	Lockless	79928664309	7 Utah Way	493404853	rlockless4l@arstechnica.com	2007-11-30	f	42193161147158207844	2025-10-13	Wykorzystany	f	2026-11-26
+167	Karyn	Fryett	09783712876	527 Cascade Street	907146607	jfryett4m@etsy.com	2002-09-20	\N	34005438028493132120	2025-11-04	Zablokowany	\N	2026-10-11
+168	Ora	Adnams	78599515817	70129 Anthes Hill	014621794	radnams4n@google.fr	2000-10-17	f	64018771182735703108	2025-09-20	Aktywny	t	2026-12-12
+169	Killy	Body	18283233031	546 Dennis Center	552237732	ebody4o@icio.us	1990-05-29	t	29415566934775808738	2025-11-20	Aktywny	t	2026-11-29
+170	Sile	Coxhead	64264078683	2650 Hayes Point	668320293	ccoxhead4p@newyorker.com	1984-06-21	\N	96806574646823248109	2025-10-13	Aktywny	f	2026-09-25
+171	Derril	Peniello	39264111912	74417 Atwood Avenue	402134702	dpeniello4q@fastcompany.com	2001-07-22	f	67820705701270043187	2025-09-13	\N	f	2026-09-30
+172	Olvan	Remirez	24165588120	2077 Gulseth Plaza	847589168	jremirez4r@godaddy.com	1980-12-07	t	69704598598882740512	2025-11-02	Aktywny	t	2026-11-09
+173	Dar	Aldam	47454421867	963 Butternut Road	464822056	ealdam4s@ycombinator.com	1983-11-26	t	15151373410823621187	2025-12-07	Aktywny	t	2026-11-04
+174	Tanya	Ciccottio	24635519559	7560 Schmedeman Hill	579557862	wciccottio4t@google.fr	1976-05-02	t	26105299309595989086	2025-11-08	\N	\N	2026-09-29
+175	Mathe	Oldknow	25825975189	66057 Mccormick Junction	280290204	aoldknow4u@delicious.com	2005-11-01	t	17649911174120201945	2025-10-23	Aktywny	\N	2026-12-02
+176	Dara	Jaynes	24668509255	4 Farmco Drive	904063176	gjaynes4v@imageshack.us	1991-02-20	f	33652428236554521042	2025-10-29	Wykorzystany	\N	2026-10-04
+177	Doroteya	Adriaens	57028559334	21 Roth Pass	655848329	dadriaens4w@si.edu	1979-12-17	t	53410589230668382753	2025-09-25	Aktywny	f	2026-09-29
+178	Barbette	Alliband	44576648306	937 Harbort Terrace	685654588	talliband4x@bandcamp.com	1993-02-18	\N	65530401053950150030	2025-10-19	Aktywny	\N	2026-09-19
+179	Morton	O'Fogerty	79943458100	96 Oak Valley Street	113408198	eofogerty4y@nyu.edu	1993-10-30	f	46137818031528302319	2025-09-17	\N	\N	2026-11-01
+180	Adi	Brogden	56315828972	06 Cody Parkway	747294010	sbrogden4z@is.gd	1997-04-27	t	42786263587012622209	2025-12-11	Aktywny	f	2026-11-28
+181	Kerrie	Kusick	74196831039	6 Fairview Place	266775613	akusick50@mac.com	1991-03-23	t	99807797547140894695	2025-12-01	\N	\N	2026-12-12
+182	Sheff	Yancey	85968846205	22 Riverside Road	611560134	kyancey51@oracle.com	2007-04-18	t	74329743084050326051	2025-09-27	\N	t	2026-10-23
+183	Kathryn	Joy	06894586260	67881 Center Center	860176401	gjoy52@flavors.me	2004-08-15	f	20064672580063831796	2025-09-13	Aktywny	f	2026-10-29
+184	Jocko	Langton	30226932976	1037 Lyons Trail	022504009	rlangton53@tamu.edu	1978-07-07	t	78012780183418725229	2025-11-30	\N	f	2026-10-15
+185	Jarrod	Vivians	71849855307	01 Mccormick Lane	935378549	yvivians54@yellowpages.com	1983-10-01	t	19049977818751484211	2025-10-04	Aktywny	t	2026-11-14
+186	Job	Reede	09335780186	695 Nevada Circle	342966933	areede55@github.io	1981-02-19	\N	80157960583110479533	2025-12-08	\N	t	2026-09-30
+187	Lauraine	Hearl	52091301838	92 Debra Pass	892473646	whearl56@de.vu	2004-10-28	f	50389698396090116211	2025-11-04	\N	f	2026-11-08
+188	Codi	Ingamells	61996479055	36 Bonner Park	718088755	cingamells57@adobe.com	1981-06-05	f	99808884459416483595	2025-10-08	Aktywny	t	2026-10-22
+189	Vinny	Scamadine	22573311273	60712 Judy Crossing	668089333	bscamadine58@linkedin.com	1990-07-03	t	17602718500837373796	2025-11-25	Zablokowany	f	2026-11-21
+190	Noni	Calley	85400948227	1 7th Street	464634139	ccalley59@reverbnation.com	1985-11-08	\N	25313837844671360422	2025-10-07	Aktywny	t	2026-10-19
+191	Sawyer	Mattiacci	50159769615	776 Killdeer Junction	873843482	nmattiacci5a@simplemachines.org	1999-05-29	t	49300386856171870481	2025-10-21	\N	t	2026-11-01
+192	Julianna	Tuffield	72280716887	31 Corry Street	460207615	ktuffield5b@go.com	2007-06-05	\N	31522930423649720480	2025-12-01	\N	\N	2026-10-05
+193	Evelyn	Janouch	84475794519	462 Gale Crossing	865372389	hjanouch5c@prlog.org	1998-12-21	t	16278009038924666089	2025-09-22	\N	\N	2026-09-19
+194	Jasen	Vigne	43432363713	72 Service Center	077815338	bvigne5d@state.gov	1992-08-07	t	16342439739777710588	2025-09-26	Aktywny	f	2026-10-29
+195	Walliw	Picard	42583652197	90 Fairfield Lane	717445804	bpicard5e@weebly.com	1980-10-12	f	04063407621995929698	2025-11-05	\N	f	2026-10-02
+196	Nathanil	Drynan	97042236562	91945 Oneill Parkway	442233471	kdrynan5f@upenn.edu	1984-08-03	\N	39306857270674858446	2025-09-15	Zablokowany	\N	2026-10-07
+197	Mag	Spens	09614538535	14 Monterey Lane	325177529	lspens5g@vistaprint.com	1979-07-05	\N	20142228825149829660	2025-12-10	Zablokowany	t	2026-11-15
+198	Papageno	Durrant	58618836776	6262 6th Hill	313528487	ldurrant5h@over-blog.com	1976-03-08	t	89934893760173538039	2025-10-30	Wykorzystany	\N	2026-11-01
+199	Gibb	Braitling	23775130694	318 Banding Place	185271231	mbraitling5i@barnesandnoble.com	1987-12-19	f	79307827447810798960	2025-11-29	Wykorzystany	f	2026-10-02
+200	Caresse	Monksfield	58669747439	888 Hoffman Pass	701543681	jmonksfield5j@disqus.com	1995-08-16	f	19238026223560888219	2025-12-02	Aktywny	t	2026-11-01
+\.
+
+
+--
+-- Data for Name: kursant_archiwum; Type: TABLE DATA; Schema: public; Owner: postgres
+--
+
+COPY public.kursant_archiwum (id_archiwum, oryginalne_id_kursanta, imie, nazwisko, pesel, adres, numer_telefonu, email, data_urodzenia, zgoda_marketingowa, numer_pkk, data_wydania_pkk, status_pkk, badania_lekarskie, data_waznosci_badan, data_archiwizacji) FROM stdin;
+\.
+
+
+--
+-- Data for Name: opiekun; Type: TABLE DATA; Schema: public; Owner: postgres
+--
+
+COPY public.opiekun (id_opiekuna, id_kursanta, imie_op, nazwisko_op, numer_telefonu_op, email_op) FROM stdin;
+1	34	Louisette	Mercik	\N	\N
+2	37	Łukasz	Wiśniewski	\N	\N
+3	42	Ewa	Jabłoński	\N	\N
+4	62	Jerzy	Nowakowski	\N	\N
+5	105	Tomasz	Zieliński	\N	\N
+6	125	Józef	Jabłoński	\N	\N
+7	150	Tadeusz	Wróbel	\N	\N
+\.
+
+
+--
+-- Data for Name: opiekun_archiwum; Type: TABLE DATA; Schema: public; Owner: postgres
+--
+
+COPY public.opiekun_archiwum (id_archiwum, oryginalne_id_opiekuna, oryginalne_id_kursanta, imie_op, nazwisko_op, numer_telefonu_op, email_op, data_archiwizacji) FROM stdin;
+\.
+
+
+--
+-- Data for Name: opinie; Type: TABLE DATA; Schema: public; Owner: postgres
+--
+
+COPY public.opinie (id_opinii, id_instruktora, ocena, komentarz, data_dodania) FROM stdin;
+1	12	5	Jazdy w miłej atmosferze, bez stresu.	2026-01-09
+2	3	4	Świetny instruktor, bardzo cierpliwy.	2026-01-09
+3	2	3	Samochody mogłyby być nowsze.	2026-01-09
+4	4	4	Najlepsza szkoła jazdy w mieście!	2026-01-09
+5	10	5	Najlepsza szkoła jazdy w mieście!	2026-01-09
+6	8	4	Super przygotowanie do teorii i praktyki.	2026-01-09
+7	2	5	Wszystko na najwyższym poziomie.	2026-01-09
+8	6	1	Samochód ciągle się psuł.	2026-01-09
+9	13	5	Punktualność i rzetelność, polecam.	2026-01-09
+10	13	4	Najlepsza szkoła jazdy w mieście!	2026-01-09
+11	1	4	Super przygotowanie do teorii i praktyki.	2026-01-09
+12	9	5	Punktualność i rzetelność, polecam.	2026-01-09
+13	7	4	Super przygotowanie do teorii i praktyki.	2026-01-09
+14	1	4	Wszystko na najwyższym poziomie.	2026-01-09
+15	1	4	Najlepsza szkoła jazdy w mieście!	2026-01-09
+16	9	4	Świetny instruktor, bardzo cierpliwy.	2026-01-09
+17	9	4	Świetny instruktor, bardzo cierpliwy.	2026-01-09
+18	4	4	Wszystko na najwyższym poziomie.	2026-01-09
+19	12	4	Egzamin zdany bez problemu, dziękuję!	2026-01-09
+20	3	3	Dużo teorii, mało praktyczniej wiedzy na wykładach.	2026-01-09
+21	11	1	Strata czasu i pieniędzy.	2026-01-09
+22	9	3	Instruktor ok, ale czasem się spóźniał.	2026-01-09
+23	8	3	Dobre podejście, ale problem z terminami.	2026-01-09
+24	6	3	Dużo teorii, mało praktyczniej wiedzy na wykładach.	2026-01-09
+25	2	4	Polecam szkołę, zdałem za pierwszym razem!	2026-01-09
+26	11	2	Egzamin oblany, słabe przygotowanie.	2026-01-09
+27	14	4	Wszystko na najwyższym poziomie.	2026-01-09
+28	15	3	Samochody mogłyby być nowsze.	2026-01-09
+29	7	1	Samochód ciągle się psuł.	2026-01-09
+30	6	3	Samochody mogłyby być nowsze.	2026-01-09
+31	4	3	Kurs w porządku, ale mogło być lepiej.	2026-01-09
+32	13	4	Punktualność i rzetelność, polecam.	2026-01-09
+33	15	4	Instruktor potrafi wszystko spokojnie wytłumaczyć.	2026-01-09
+34	4	5	Polecam szkołę, zdałem za pierwszym razem!	2026-01-09
+35	6	4	Instruktor potrafi wszystko spokojnie wytłumaczyć.	2026-01-09
+36	15	3	Szkoła przeciętna, ale zdałem.	2026-01-09
+37	10	1	Problemy z umawianiem jazd.	2026-01-09
+38	13	3	Szkoła przeciętna, ale zdałem.	2026-01-09
+39	8	4	Instruktor potrafi wszystko spokojnie wytłumaczyć.	2026-01-09
+40	7	5	Najlepsza szkoła jazdy w mieście!	2026-01-09
+41	6	3	Samochody mogłyby być nowsze.	2026-01-09
+42	4	3	Kurs w porządku, ale mogło być lepiej.	2026-01-09
+43	1	4	Super przygotowanie do teorii i praktyki.	2026-01-09
+44	5	5	Jazdy w miłej atmosferze, bez stresu.	2026-01-09
+45	8	3	Szkoła przeciętna, ale zdałem.	2026-01-09
+46	7	3	Dobre podejście, ale problem z terminami.	2026-01-09
+47	12	1	Problemy z umawianiem jazd.	2026-01-09
+48	4	4	Super przygotowanie do teorii i praktyki.	2026-01-09
+49	6	4	Wszystko na najwyższym poziomie.	2026-01-09
+50	6	4	Instruktor potrafi wszystko spokojnie wytłumaczyć.	2026-01-09
+\.
+
+
+--
+-- Data for Name: platnosci; Type: TABLE DATA; Schema: public; Owner: postgres
+--
+
+COPY public.platnosci (id_platnosci, id_indywidualnego_kursu, kwota, data_platnosci, metoda_platnosci, tytul_platnosci, id_faktury) FROM stdin;
+1	1	2841.29	2025-09-29	Karta	Opłata egzaminacyjna	FV/2025/39018
+2	2	983.66	2025-11-15	Karta	I rata za kurs	FV/2025/31206
+3	3	1382.74	2025-11-14	Przelew	Opłata egzaminacyjna	FV/2025/58338
+4	4	868.42	2025-09-23	Gotówka	Opłata za kurs (całość)	FV/2025/91500
+5	5	1243.00	2025-09-16	Przelew	Jazdy doszkalające	FV/2025/31706
+6	6	501.44	2025-10-04	Gotówka	Opłata za kurs (całość)	FV/2025/12925
+7	7	3486.28	2025-09-14	Przelew	Jazdy doszkalające	FV/2025/26942
+8	8	1064.32	2025-10-31	Przelew	Opłata egzaminacyjna	FV/2025/07240
+9	9	2576.29	2025-10-09	Przelew	I rata za kurs	FV/2025/71472
+10	10	2679.98	2025-09-25	Karta	Jazdy doszkalające	FV/2025/73851
+11	11	924.63	2025-11-26	Przelew	I rata za kurs	FV/2025/49553
+12	12	2167.49	2025-10-28	Karta	Jazdy doszkalające	FV/2025/95596
+13	13	2600.99	2025-10-23	Gotówka	Jazdy doszkalające	FV/2025/44487
+14	14	2541.02	2025-09-16	Karta	I rata za kurs	FV/2025/32717
+15	15	1590.45	2025-12-04	Karta	I rata za kurs	FV/2025/14524
+16	16	520.09	2025-09-24	Przelew	Jazdy doszkalające	FV/2025/51095
+17	17	2614.57	2025-10-15	Przelew	I rata za kurs	FV/2025/35205
+18	18	2756.55	2025-09-14	Karta	Opłata za kurs (całość)	FV/2025/64431
+19	19	2229.86	2025-10-29	Przelew	Jazdy doszkalające	FV/2025/29910
+20	20	1657.31	2025-11-30	Karta	Jazdy doszkalające	FV/2025/94586
+21	21	520.69	2025-10-23	Karta	Opłata egzaminacyjna	FV/2025/39107
+22	22	2604.00	2025-11-18	Karta	II rata za kurs	FV/2025/64956
+23	23	572.34	2025-11-27	Karta	II rata za kurs	FV/2025/49900
+24	24	1399.64	2025-12-10	Przelew	I rata za kurs	FV/2025/06455
+25	25	713.20	2025-10-02	Przelew	Opłata egzaminacyjna	FV/2025/95646
+26	26	3379.78	2025-10-07	Karta	I rata za kurs	FV/2025/63248
+27	27	1579.37	2025-10-19	Przelew	Opłata za kurs (całość)	FV/2025/60343
+28	28	1080.82	2025-09-14	Przelew	I rata za kurs	FV/2025/27087
+29	29	2237.50	2025-12-07	Przelew	II rata za kurs	FV/2025/18170
+30	30	3430.18	2025-12-04	Gotówka	Opłata egzaminacyjna	FV/2025/41528
+31	31	790.94	2025-11-07	Gotówka	I rata za kurs	FV/2025/22548
+32	32	520.95	2025-10-16	Karta	Jazdy doszkalające	FV/2025/76005
+33	33	817.78	2025-10-18	Przelew	II rata za kurs	FV/2025/36800
+34	34	1628.75	2025-09-24	Karta	Jazdy doszkalające	FV/2025/78321
+35	35	2604.27	2025-09-29	Gotówka	II rata za kurs	FV/2025/65251
+36	36	2044.25	2025-10-23	Przelew	Opłata egzaminacyjna	FV/2025/14613
+37	37	2096.15	2025-09-19	Karta	II rata za kurs	FV/2025/51251
+38	38	2533.05	2025-12-10	Gotówka	I rata za kurs	FV/2025/69461
+39	39	1130.47	2025-10-27	Gotówka	Opłata za kurs (całość)	FV/2025/73036
+40	40	1311.30	2025-12-04	Gotówka	I rata za kurs	FV/2025/55336
+41	41	1869.14	2025-10-15	Przelew	Jazdy doszkalające	FV/2025/43528
+42	42	793.59	2025-12-09	Gotówka	Opłata egzaminacyjna	FV/2025/12358
+43	43	1661.61	2025-10-11	Karta	I rata za kurs	FV/2025/26582
+44	44	973.07	2025-10-09	Gotówka	I rata za kurs	FV/2025/30621
+45	45	1773.80	2025-12-10	Karta	Jazdy doszkalające	FV/2025/90565
+46	46	1521.73	2025-09-21	Karta	Jazdy doszkalające	FV/2025/06534
+47	47	1574.25	2025-09-25	Gotówka	I rata za kurs	FV/2025/76224
+48	48	825.69	2025-10-26	Przelew	Opłata egzaminacyjna	FV/2025/67962
+49	49	1779.14	2025-09-18	Karta	Opłata za kurs (całość)	FV/2025/34895
+50	50	2526.55	2025-10-06	Przelew	Opłata egzaminacyjna	FV/2025/66630
+51	51	3324.38	2025-12-09	Przelew	Opłata egzaminacyjna	FV/2025/16098
+52	52	2954.00	2025-10-10	Przelew	II rata za kurs	FV/2025/25132
+53	53	1998.04	2025-09-24	Przelew	I rata za kurs	FV/2025/87006
+54	54	2849.97	2025-10-26	Karta	Opłata egzaminacyjna	FV/2025/84083
+55	55	3043.75	2025-10-28	Karta	Opłata egzaminacyjna	FV/2025/78960
+56	56	2864.45	2025-10-10	Gotówka	I rata za kurs	FV/2025/70093
+57	57	3412.48	2025-10-09	Gotówka	Opłata za kurs (całość)	FV/2025/38334
+58	58	908.76	2025-11-13	Przelew	Opłata egzaminacyjna	FV/2025/90397
+59	59	958.82	2025-10-19	Karta	Opłata za kurs (całość)	FV/2025/08682
+60	60	2809.94	2025-11-23	Karta	Jazdy doszkalające	FV/2025/22006
+61	61	1962.43	2025-12-05	Przelew	II rata za kurs	FV/2025/00546
+62	62	2441.92	2025-11-24	Przelew	II rata za kurs	FV/2025/90874
+63	63	3485.78	2025-09-21	Karta	I rata za kurs	FV/2025/47208
+64	64	1912.03	2025-09-30	Karta	I rata za kurs	FV/2025/92763
+65	65	2373.63	2025-10-30	Przelew	II rata za kurs	FV/2025/01440
+66	66	3366.74	2025-10-04	Przelew	Opłata egzaminacyjna	FV/2025/32118
+67	67	1642.09	2025-10-23	Gotówka	II rata za kurs	FV/2025/71751
+68	68	2084.89	2025-09-17	Karta	Opłata egzaminacyjna	FV/2025/26107
+69	69	2033.64	2025-12-03	Karta	Opłata egzaminacyjna	FV/2025/72109
+70	70	2908.32	2025-12-07	Przelew	II rata za kurs	FV/2025/29077
+71	71	2811.00	2025-10-20	Gotówka	II rata za kurs	FV/2025/93320
+72	72	1027.80	2025-10-23	Gotówka	Jazdy doszkalające	FV/2025/45499
+73	73	1740.68	2025-10-29	Przelew	Opłata egzaminacyjna	FV/2025/05562
+74	74	3345.55	2025-12-10	Karta	II rata za kurs	FV/2025/67877
+75	75	1649.80	2025-09-29	Karta	I rata za kurs	FV/2025/79999
+76	76	3428.04	2025-09-17	Przelew	Opłata egzaminacyjna	FV/2025/40865
+77	77	3389.76	2025-10-21	Gotówka	I rata za kurs	FV/2025/59634
+78	78	1541.49	2025-11-20	Przelew	Opłata egzaminacyjna	FV/2025/60837
+79	79	602.68	2025-11-27	Karta	II rata za kurs	FV/2025/68225
+80	80	2922.26	2025-10-23	Karta	Opłata egzaminacyjna	FV/2025/76160
+81	81	2302.35	2025-11-14	Przelew	I rata za kurs	FV/2025/28663
+82	82	2510.78	2025-10-04	Gotówka	II rata za kurs	FV/2025/39938
+83	83	937.24	2025-10-08	Karta	I rata za kurs	FV/2025/21695
+84	84	3058.03	2025-10-19	Przelew	I rata za kurs	FV/2025/14560
+85	85	1443.07	2025-10-23	Gotówka	I rata za kurs	FV/2025/40603
+86	86	3099.11	2025-11-14	Przelew	I rata za kurs	FV/2025/71050
+87	87	1041.20	2025-11-19	Karta	II rata za kurs	FV/2025/05637
+88	88	2270.77	2025-10-16	Gotówka	II rata za kurs	FV/2025/67237
+89	89	2695.36	2025-11-02	Przelew	Opłata egzaminacyjna	FV/2025/16928
+90	90	2059.77	2025-09-16	Karta	Opłata egzaminacyjna	FV/2025/85269
+91	91	3415.79	2025-12-07	Gotówka	Opłata za kurs (całość)	FV/2025/51793
+92	92	2459.88	2025-12-07	Przelew	Opłata egzaminacyjna	FV/2025/63274
+93	93	2949.63	2025-10-14	Karta	Opłata egzaminacyjna	FV/2025/01872
+94	94	2654.80	2025-09-28	Gotówka	Opłata egzaminacyjna	FV/2025/36315
+95	95	2340.58	2025-10-02	Przelew	I rata za kurs	FV/2025/05810
+96	96	3274.55	2025-11-28	Gotówka	Jazdy doszkalające	FV/2025/61196
+97	97	2950.14	2025-09-21	Karta	Opłata egzaminacyjna	FV/2025/02490
+98	98	975.30	2025-09-21	Gotówka	Jazdy doszkalające	FV/2025/04006
+99	99	979.41	2025-09-27	Gotówka	I rata za kurs	FV/2025/04643
+100	100	3418.08	2025-11-20	Gotówka	Opłata egzaminacyjna	FV/2025/49824
+101	101	2409.17	2025-10-17	Przelew	Jazdy doszkalające	FV/2025/27578
+102	102	2490.62	2025-11-29	Karta	I rata za kurs	FV/2025/30372
+103	103	2438.45	2025-11-19	Karta	Opłata egzaminacyjna	FV/2025/27216
+104	104	1074.63	2025-09-29	Karta	Jazdy doszkalające	FV/2025/24454
+105	105	3058.03	2025-10-24	Gotówka	Jazdy doszkalające	FV/2025/33272
+106	106	2010.44	2025-10-16	Gotówka	Opłata egzaminacyjna	FV/2025/11639
+107	107	1640.20	2025-11-09	Karta	Opłata egzaminacyjna	FV/2025/60215
+108	108	1712.67	2025-11-30	Gotówka	Jazdy doszkalające	FV/2025/44543
+109	109	557.53	2025-10-17	Karta	II rata za kurs	FV/2025/42794
+110	110	2760.97	2025-10-06	Karta	Opłata za kurs (całość)	FV/2025/10472
+111	111	3465.64	2025-10-02	Karta	II rata za kurs	FV/2025/61736
+112	112	2169.23	2025-10-21	Karta	II rata za kurs	FV/2025/42177
+113	113	2392.72	2025-10-10	Przelew	Opłata za kurs (całość)	FV/2025/18237
+114	114	1011.10	2025-11-28	Przelew	II rata za kurs	FV/2025/74379
+115	115	1198.60	2025-11-17	Gotówka	Jazdy doszkalające	FV/2025/34946
+116	116	2669.50	2025-10-11	Przelew	Opłata egzaminacyjna	FV/2025/83311
+117	117	3285.66	2025-10-18	Karta	Opłata za kurs (całość)	FV/2025/16694
+118	118	1275.91	2025-11-08	Karta	II rata za kurs	FV/2025/12675
+119	119	818.67	2025-12-07	Gotówka	Opłata za kurs (całość)	FV/2025/74882
+120	120	2106.73	2025-10-25	Przelew	Opłata za kurs (całość)	FV/2025/18407
+121	121	2542.51	2025-11-09	Karta	Jazdy doszkalające	FV/2025/01150
+122	122	3372.69	2025-12-09	Przelew	Jazdy doszkalające	FV/2025/24797
+123	123	2132.18	2025-10-01	Gotówka	Opłata za kurs (całość)	FV/2025/18552
+124	124	3164.94	2025-11-29	Gotówka	Opłata egzaminacyjna	FV/2025/97927
+125	125	3477.66	2025-12-01	Przelew	II rata za kurs	FV/2025/51013
+126	126	2240.64	2025-11-20	Karta	II rata za kurs	FV/2025/99584
+127	127	3217.07	2025-09-18	Przelew	Opłata za kurs (całość)	FV/2025/66572
+128	128	712.67	2025-11-22	Karta	II rata za kurs	FV/2025/05745
+129	129	2005.23	2025-11-11	Przelew	Opłata egzaminacyjna	FV/2025/83664
+130	130	3491.87	2025-11-02	Karta	Opłata egzaminacyjna	FV/2025/48375
+131	131	1249.92	2025-11-19	Przelew	I rata za kurs	FV/2025/10597
+132	132	589.43	2025-09-17	Karta	Opłata za kurs (całość)	FV/2025/50736
+133	133	3090.12	2025-12-07	Przelew	Jazdy doszkalające	FV/2025/66555
+134	134	2087.52	2025-10-16	Przelew	I rata za kurs	FV/2025/78004
+135	135	2811.40	2025-11-07	Karta	Opłata egzaminacyjna	FV/2025/95453
+136	136	2487.67	2025-11-30	Gotówka	I rata za kurs	FV/2025/73467
+137	137	1574.60	2025-11-04	Karta	Opłata egzaminacyjna	FV/2025/64488
+138	138	850.57	2025-11-19	Karta	Opłata egzaminacyjna	FV/2025/70610
+139	139	2628.83	2025-11-15	Karta	Jazdy doszkalające	FV/2025/14534
+140	140	2497.36	2025-12-11	Przelew	Jazdy doszkalające	FV/2025/15876
+141	141	2107.82	2025-11-24	Karta	I rata za kurs	FV/2025/15522
+142	142	2362.83	2025-11-20	Karta	Opłata egzaminacyjna	FV/2025/27082
+143	143	1730.75	2025-11-05	Karta	Opłata za kurs (całość)	FV/2025/00683
+144	144	1253.67	2025-09-24	Przelew	I rata za kurs	FV/2025/49688
+145	145	2407.69	2025-10-18	Karta	Opłata egzaminacyjna	FV/2025/73142
+146	146	1612.33	2025-12-12	Przelew	I rata za kurs	FV/2025/03049
+147	147	2528.30	2025-09-19	Przelew	I rata za kurs	FV/2025/57785
+148	148	2374.09	2025-11-30	Karta	I rata za kurs	FV/2025/25726
+149	149	798.08	2025-11-25	Gotówka	I rata za kurs	FV/2025/95065
+150	150	1792.87	2025-10-19	Przelew	Jazdy doszkalające	FV/2025/94373
+151	151	3237.59	2025-10-10	Przelew	II rata za kurs	FV/2025/72661
+152	152	1382.96	2025-10-03	Przelew	Opłata egzaminacyjna	FV/2025/15112
+153	153	2270.78	2025-09-20	Przelew	Jazdy doszkalające	FV/2025/88908
+154	154	2631.95	2025-11-28	Gotówka	Jazdy doszkalające	FV/2025/90443
+155	155	1060.87	2025-09-14	Gotówka	II rata za kurs	FV/2025/73582
+156	156	1469.89	2025-10-05	Przelew	Opłata za kurs (całość)	FV/2025/99429
+157	157	1018.96	2025-10-17	Gotówka	Opłata egzaminacyjna	FV/2025/43839
+158	158	801.94	2025-10-31	Gotówka	II rata za kurs	FV/2025/83494
+159	159	2137.45	2025-10-01	Przelew	Opłata egzaminacyjna	FV/2025/96596
+160	160	1931.28	2025-10-21	Przelew	Opłata egzaminacyjna	FV/2025/47699
+161	161	2261.82	2025-11-01	Gotówka	Opłata za kurs (całość)	FV/2025/27251
+162	162	2687.41	2025-11-10	Karta	Jazdy doszkalające	FV/2025/12197
+163	163	2716.68	2025-09-26	Karta	Opłata za kurs (całość)	FV/2025/32190
+164	164	2619.64	2025-10-07	Karta	II rata za kurs	FV/2025/87963
+165	165	3368.08	2025-11-16	Karta	II rata za kurs	FV/2025/86142
+166	166	2928.96	2025-09-30	Przelew	Opłata egzaminacyjna	FV/2025/10219
+167	167	614.93	2025-11-04	Gotówka	II rata za kurs	FV/2025/74747
+168	168	1471.13	2025-11-09	Karta	Opłata egzaminacyjna	FV/2025/75156
+169	169	1157.48	2025-11-17	Karta	Opłata egzaminacyjna	FV/2025/52178
+170	170	2968.58	2025-12-04	Przelew	II rata za kurs	FV/2025/80983
+171	171	1113.34	2025-11-25	Gotówka	Jazdy doszkalające	FV/2025/81532
+172	172	3436.99	2025-12-03	Przelew	II rata za kurs	FV/2025/49512
+173	173	2373.68	2025-11-19	Karta	I rata za kurs	FV/2025/41374
+174	174	3175.73	2025-10-21	Karta	Opłata za kurs (całość)	FV/2025/79160
+175	175	2319.64	2025-11-21	Gotówka	I rata za kurs	FV/2025/97959
+176	176	949.81	2025-10-22	Przelew	Opłata za kurs (całość)	FV/2025/44398
+177	177	2774.51	2025-10-09	Karta	Opłata za kurs (całość)	FV/2025/68599
+178	178	953.01	2025-10-11	Karta	Opłata egzaminacyjna	FV/2025/50966
+179	179	1305.79	2025-10-16	Karta	II rata za kurs	FV/2025/65842
+180	180	2727.82	2025-09-27	Karta	II rata za kurs	FV/2025/30153
+181	181	3471.19	2025-10-28	Przelew	I rata za kurs	FV/2025/17370
+182	182	909.79	2025-12-10	Gotówka	Opłata egzaminacyjna	FV/2025/16603
+183	183	1900.97	2025-11-20	Przelew	Opłata za kurs (całość)	FV/2025/01167
+184	184	2274.72	2025-10-03	Gotówka	I rata za kurs	FV/2025/59535
+185	185	1717.60	2025-11-29	Karta	Opłata egzaminacyjna	FV/2025/31946
+186	186	1212.31	2025-12-12	Gotówka	II rata za kurs	FV/2025/06796
+187	187	3130.18	2025-09-30	Gotówka	I rata za kurs	FV/2025/22689
+188	188	554.28	2025-12-12	Gotówka	II rata za kurs	FV/2025/99007
+189	189	552.57	2025-09-20	Przelew	Jazdy doszkalające	FV/2025/83862
+190	190	3113.81	2025-09-14	Karta	II rata za kurs	FV/2025/76317
+191	191	1028.23	2025-10-04	Karta	Opłata egzaminacyjna	FV/2025/60326
+192	192	1158.40	2025-09-19	Gotówka	Opłata egzaminacyjna	FV/2025/75308
+193	193	3119.61	2025-11-14	Przelew	Opłata za kurs (całość)	FV/2025/36657
+194	194	1957.29	2025-11-02	Przelew	II rata za kurs	FV/2025/05054
+195	195	2139.35	2025-10-17	Przelew	Jazdy doszkalające	FV/2025/97809
+196	196	1024.11	2025-12-09	Karta	Opłata za kurs (całość)	FV/2025/49828
+197	197	1804.98	2025-09-17	Karta	Opłata egzaminacyjna	FV/2025/28713
+198	198	2633.96	2025-11-10	Przelew	Opłata egzaminacyjna	FV/2025/17132
+199	199	730.01	2025-10-29	Gotówka	I rata za kurs	FV/2025/69958
+200	200	3388.05	2025-09-28	Gotówka	II rata za kurs	FV/2025/77264
+201	2	2216.34	2025-11-09	Przelew	Dopłata wyrównawcza	FV/2026/FIX2
+202	4	2331.58	2025-10-27	Przelew	Dopłata wyrównawcza	FV/2026/FIX4
+203	8	2135.68	2025-09-27	Przelew	Dopłata wyrównawcza	FV/2026/FIX8
+204	9	623.71	2025-10-22	Przelew	Dopłata wyrównawcza	FV/2026/FIX9
+205	13	599.01	2025-10-02	Przelew	Dopłata wyrównawcza	FV/2026/FIX13
+206	15	1609.55	2025-12-06	Przelew	Dopłata wyrównawcza	FV/2026/FIX15
+207	16	2679.91	2025-10-24	Przelew	Dopłata wyrównawcza	FV/2026/FIX16
+208	18	443.45	2025-10-25	Przelew	Dopłata wyrównawcza	FV/2026/FIX18
+209	19	970.14	2025-11-05	Przelew	Dopłata wyrównawcza	FV/2026/FIX19
+210	20	1542.69	2025-10-25	Przelew	Dopłata wyrównawcza	FV/2026/FIX20
+211	21	2679.31	2025-10-16	Przelew	Dopłata wyrównawcza	FV/2026/FIX21
+212	23	2627.66	2025-12-05	Przelew	Dopłata wyrównawcza	FV/2026/FIX23
+213	24	1800.36	2025-10-12	Przelew	Dopłata wyrównawcza	FV/2026/FIX24
+214	25	2486.80	2025-11-21	Przelew	Dopłata wyrównawcza	FV/2026/FIX25
+215	27	1620.63	2025-09-28	Przelew	Dopłata wyrównawcza	FV/2026/FIX27
+216	28	2119.18	2025-12-07	Przelew	Dopłata wyrównawcza	FV/2026/FIX28
+217	31	2409.06	2025-10-25	Przelew	Dopłata wyrównawcza	FV/2026/FIX31
+218	32	2679.05	2025-11-01	Przelew	Dopłata wyrównawcza	FV/2026/FIX32
+219	34	1571.25	2025-10-11	Przelew	Dopłata wyrównawcza	FV/2026/FIX34
+220	36	1155.75	2025-09-28	Przelew	Dopłata wyrównawcza	FV/2026/FIX36
+221	38	666.95	2025-11-26	Przelew	Dopłata wyrównawcza	FV/2026/FIX38
+222	40	1888.70	2025-10-14	Przelew	Dopłata wyrównawcza	FV/2026/FIX40
+223	41	1330.86	2025-11-28	Przelew	Dopłata wyrównawcza	FV/2026/FIX41
+224	42	2406.41	2025-10-18	Przelew	Dopłata wyrównawcza	FV/2026/FIX42
+225	46	1678.27	2025-09-23	Przelew	Dopłata wyrównawcza	FV/2026/FIX46
+226	48	2374.31	2025-10-26	Przelew	Dopłata wyrównawcza	FV/2026/FIX48
+227	49	1420.86	2025-12-02	Przelew	Dopłata wyrównawcza	FV/2026/FIX49
+228	50	673.45	2025-10-08	Przelew	Dopłata wyrównawcza	FV/2026/FIX50
+229	54	350.03	2025-12-05	Przelew	Dopłata wyrównawcza	FV/2026/FIX54
+230	61	1237.57	2025-09-28	Przelew	Dopłata wyrównawcza	FV/2026/FIX61
+231	62	758.08	2025-12-04	Przelew	Dopłata wyrównawcza	FV/2026/FIX62
+232	67	1557.91	2025-09-20	Przelew	Dopłata wyrównawcza	FV/2026/FIX67
+233	68	1115.11	2025-09-29	Przelew	Dopłata wyrównawcza	FV/2026/FIX68
+234	69	1166.36	2025-10-07	Przelew	Dopłata wyrównawcza	FV/2026/FIX69
+235	72	2172.20	2025-09-24	Przelew	Dopłata wyrównawcza	FV/2026/FIX72
+236	78	1658.51	2025-10-01	Przelew	Dopłata wyrównawcza	FV/2026/FIX78
+237	85	1756.93	2025-10-22	Przelew	Dopłata wyrównawcza	FV/2026/FIX85
+238	87	2158.80	2025-12-05	Przelew	Dopłata wyrównawcza	FV/2026/FIX87
+239	89	504.64	2025-10-07	Przelew	Dopłata wyrównawcza	FV/2026/FIX89
+240	90	1140.23	2025-12-10	Przelew	Dopłata wyrównawcza	FV/2026/FIX90
+241	92	740.12	2025-10-27	Przelew	Dopłata wyrównawcza	FV/2026/FIX92
+242	97	249.86	2025-11-18	Przelew	Dopłata wyrównawcza	FV/2026/FIX97
+243	98	2224.70	2025-10-30	Przelew	Dopłata wyrównawcza	FV/2026/FIX98
+244	99	2220.59	2025-11-16	Przelew	Dopłata wyrównawcza	FV/2026/FIX99
+245	107	1559.80	2025-11-01	Przelew	Dopłata wyrównawcza	FV/2026/FIX107
+246	110	439.03	2025-10-19	Przelew	Dopłata wyrównawcza	FV/2026/FIX110
+247	114	2188.90	2025-10-20	Przelew	Dopłata wyrównawcza	FV/2026/FIX114
+248	118	1924.09	2025-11-25	Przelew	Dopłata wyrównawcza	FV/2026/FIX118
+249	119	2381.33	2025-09-13	Przelew	Dopłata wyrównawcza	FV/2026/FIX119
+250	121	657.49	2025-09-20	Przelew	Dopłata wyrównawcza	FV/2026/FIX121
+251	123	1067.82	2025-12-01	Przelew	Dopłata wyrównawcza	FV/2026/FIX123
+252	124	35.06	2025-10-24	Przelew	Dopłata wyrównawcza	FV/2026/FIX124
+253	126	959.36	2025-09-14	Przelew	Dopłata wyrównawcza	FV/2026/FIX126
+254	129	1194.77	2025-11-06	Przelew	Dopłata wyrównawcza	FV/2026/FIX129
+255	132	2610.57	2025-11-23	Przelew	Dopłata wyrównawcza	FV/2026/FIX132
+256	138	2349.43	2025-11-27	Przelew	Dopłata wyrównawcza	FV/2026/FIX138
+257	140	702.64	2025-12-01	Przelew	Dopłata wyrównawcza	FV/2026/FIX140
+258	141	1092.18	2025-10-03	Przelew	Dopłata wyrównawcza	FV/2026/FIX141
+259	143	1469.25	2025-09-30	Przelew	Dopłata wyrównawcza	FV/2026/FIX143
+260	145	792.31	2025-09-22	Przelew	Dopłata wyrównawcza	FV/2026/FIX145
+261	148	825.91	2025-09-19	Przelew	Dopłata wyrównawcza	FV/2026/FIX148
+262	153	929.22	2025-10-15	Przelew	Dopłata wyrównawcza	FV/2026/FIX153
+263	154	568.05	2025-11-24	Przelew	Dopłata wyrównawcza	FV/2026/FIX154
+264	155	2139.13	2025-10-11	Przelew	Dopłata wyrównawcza	FV/2026/FIX155
+265	156	1730.11	2025-11-30	Przelew	Dopłata wyrównawcza	FV/2026/FIX156
+266	157	2181.04	2025-11-06	Przelew	Dopłata wyrównawcza	FV/2026/FIX157
+267	159	1062.55	2025-09-29	Przelew	Dopłata wyrównawcza	FV/2026/FIX159
+268	160	1268.72	2025-12-03	Przelew	Dopłata wyrównawcza	FV/2026/FIX160
+269	163	483.32	2025-10-25	Przelew	Dopłata wyrównawcza	FV/2026/FIX163
+270	164	580.36	2025-11-23	Przelew	Dopłata wyrównawcza	FV/2026/FIX164
+271	166	271.04	2025-11-06	Przelew	Dopłata wyrównawcza	FV/2026/FIX166
+272	167	2585.07	2025-10-21	Przelew	Dopłata wyrównawcza	FV/2026/FIX167
+273	168	1728.87	2025-09-18	Przelew	Dopłata wyrównawcza	FV/2026/FIX168
+274	169	2042.52	2025-10-18	Przelew	Dopłata wyrównawcza	FV/2026/FIX169
+275	175	880.36	2025-09-14	Przelew	Dopłata wyrównawcza	FV/2026/FIX175
+276	176	2250.19	2025-12-02	Przelew	Dopłata wyrównawcza	FV/2026/FIX176
+277	177	425.49	2025-09-25	Przelew	Dopłata wyrównawcza	FV/2026/FIX177
+278	180	472.18	2025-11-16	Przelew	Dopłata wyrównawcza	FV/2026/FIX180
+279	182	2290.21	2025-12-09	Przelew	Dopłata wyrównawcza	FV/2026/FIX182
+280	185	1482.40	2025-10-14	Przelew	Dopłata wyrównawcza	FV/2026/FIX185
+281	186	1987.69	2025-11-08	Przelew	Dopłata wyrównawcza	FV/2026/FIX186
+282	187	69.82	2025-11-20	Przelew	Dopłata wyrównawcza	FV/2026/FIX187
+283	188	2645.72	2025-11-28	Przelew	Dopłata wyrównawcza	FV/2026/FIX188
+284	191	2171.77	2025-11-27	Przelew	Dopłata wyrównawcza	FV/2026/FIX191
+285	195	1060.65	2025-10-05	Przelew	Dopłata wyrównawcza	FV/2026/FIX195
+286	196	2175.89	2025-12-08	Przelew	Dopłata wyrównawcza	FV/2026/FIX196
+287	198	566.04	2025-12-01	Przelew	Dopłata wyrównawcza	FV/2026/FIX198
+\.
+
+
+--
+-- Data for Name: platnosci_archiwum; Type: TABLE DATA; Schema: public; Owner: postgres
+--
+
+COPY public.platnosci_archiwum (id_archiwum, oryginalne_id_platnosci, oryginalne_id_kursu, kwota, data_platnosci, metoda_platnosci, tytul_platnosci, id_faktury, data_archiwizacji) FROM stdin;
+\.
+
+
+--
+-- Data for Name: pojazd; Type: TABLE DATA; Schema: public; Owner: postgres
+--
+
+COPY public.pojazd (id_pojazdu, model_pojazdu, numer_rejestracyjny, numer_vin, stan_techniczny, stan_paliwa, data_waznosci_ubezpieczen, data_przegladu, rodzaj_skrzyni_biegow, status_pojazdu, przebieg) FROM stdin;
+1	Suzuki Swift	KR 70723	WBAYP5C58ED218249	\N	10	2025-03-22	2025-03-01	Automatyczna	Sprawny	187400
+2	Suzuki Swift	KR 29714	WAUSF98E77A691587	at velit eu	14	2026-05-16	2025-07-14	Automatyczna	Sprawny	133310
+3	Hyundai i20	KR 35349	WA1EY94L47D154778	\N	44	2025-08-14	2025-11-20	Automatyczna	Sprawny	161770
+4	Toyota Yaris	KR 41239	JM1BL1L39C1439062	\N	91	2025-09-30	2025-01-07	Automatyczna	Sprawny	209908
+5	Suzuki Swift	KR 21473	JTHBP5C20A5543057	sit amet	68	2025-02-01	2025-06-07	Automatyczna	Sprawny	78759
+6	Suzuki Swift	KR 94487	WBAYB6C54ED810560	\N	17	2026-02-16	2025-10-15	Manualna	Sprawny	111504
+7	Kia Rio	KR 88527	2HNYD284X8H024883	\N	4	2025-05-26	2025-07-13	Manualna	Sprzedany	225393
+8	Renault Clio	KR 02956	1G4GE5GV1AF565415	iaculis justo in hac habitasse	45	2026-04-01	2025-03-08	Automatyczna	Sprawny	192118
+9	Skoda Fabia	KR 31740	WAUDF98EX8A848068	\N	64	2025-12-25	2025-12-09	Automatyczna	Sprawny	96349
+10	Kia Rio	KR 03748	JTJBM7FX2C5562271	blandit mi	69	2025-07-15	2024-12-17	Automatyczna	Sprawny	55177
+11	Renault Clio	KR 76596	WAUFFBFL6CN957579	volutpat eleifend donec	55	2025-05-07	2025-02-27	Manualna	Sprawny	81541
+12	Kia Rio	KR 37606	4A37L2EF4AE915028	\N	78	2026-11-29	2025-10-24	Automatyczna	Sprzedany	243899
+13	Renault Clio	KR 01694	KM8JT3AF4EU368225	eros elementum pellentesque quisque porta	14	2026-02-23	2025-01-19	Manualna	Sprawny	174878
+14	Hyundai i20	KR 24784	WA1WMBFE3CD919706	habitasse platea dictumst morbi vestibulum	95	2026-06-13	2025-05-19	Automatyczna	Sprawny	113891
+15	Renault Clio	KR 80660	3FA6P0PU9ER276639	\N	91	2026-04-22	2025-04-24	Manualna	Sprawny	83968
+16	Hyundai i20	KR 12436	JHMZF1D41DS826907	\N	64	2026-01-15	2025-10-21	Manualna	Sprawny	98126
+17	Hyundai i20	KR 65386	WBAEV33442P683917	\N	53	2026-06-24	2025-11-11	Automatyczna	Sprawny	172269
+18	Skoda Fabia	KR 26112	SCBFT7ZA4DC277456	orci mauris lacinia sapien	90	2024-12-24	2025-03-27	Automatyczna	Sprawny	221666
+19	Skoda Fabia	KR 49120	1FMJU1G5XAE958186	volutpat in congue etiam	8	2025-07-23	2025-09-03	Manualna	Sprawny	136011
+20	Toyota Yaris	KR 64006	JH4CU4F49BC054125	\N	79	2024-12-28	2025-07-06	Manualna	Sprawny	112698
+21	Skoda Fabia	KR 55624	WAUCFAFR4BA558693	\N	24	2025-07-17	2024-12-28	Automatyczna	Sprawny	107093
+22	Hyundai i20	KR 30406	5N1AA0NC5DN215415	nisl nunc	8	2026-07-20	2024-12-13	Automatyczna	Sprawny	120988
+23	Toyota Yaris	KR 50819	3MZBM1U77EM328544	nam nulla	71	2026-06-19	2025-05-17	Automatyczna	Sprawny	145628
+24	Toyota Yaris	KR 97592	WBALM7C54DE102263	ligula in	39	2025-09-19	2025-06-10	Automatyczna	Sprzedany	114241
+25	Skoda Fabia	KR 93305	2HNYD18212H196025	\N	30	2025-03-28	2025-06-13	Manualna	Sprawny	168860
+26	Toyota Yaris	KR 90792	WBACN33411L205886	suscipit nulla elit ac nulla	92	2026-04-05	2024-12-28	Automatyczna	Sprawny	186975
+27	Toyota Yaris	KR 20764	WBAVT73508F188148	mauris viverra diam vitae	91	2025-09-20	2025-08-27	Automatyczna	Sprawny	182450
+28	Hyundai i20	KR 80012	3VW4S7AT6EM294177	\N	59	2026-04-16	2025-02-01	Manualna	Sprawny	161070
+29	Suzuki Swift	KR 27064	KNDJT2A15A7416407	\N	5	2025-11-06	2025-11-28	Automatyczna	Sprzedany	99797
+30	Toyota Yaris	KR 23125	KMHHT6KD1BU152759	et commodo vulputate	93	2026-01-05	2025-05-06	Automatyczna	Sprawny	149989
+31	Opel Corsa	KR 15088	1VWAH7A32DC995610	\N	46	2026-03-28	2025-02-04	Automatyczna	Sprawny	140882
+32	Opel Corsa	KR 94798	1FTMF1EW5AK216092	amet sem fusce consequat	9	2025-01-11	2025-05-05	Manualna	Sprawny	199057
+33	Suzuki Swift	KR 79898	WAUAF78EX8A303155	\N	67	2025-08-03	2025-11-07	Automatyczna	Sprawny	170875
+34	Opel Corsa	KR 11002	WAUVT68E55A619739	bibendum felis	34	2025-11-14	2025-09-30	Automatyczna	Sprawny	271533
+35	Opel Corsa	KR 88006	5J8TB3H34GL190970	\N	79	2025-12-30	2025-02-03	Manualna	Sprawny	193403
+36	Renault Clio	KR 02930	1FTSW3B52AE213129	\N	18	2025-06-26	2025-02-24	Automatyczna	Sprawny	88793
+37	Kia Rio	KR 41698	1GYS4HEF0DR364391	\N	17	2025-06-02	2025-10-17	Automatyczna	Sprawny	31562
+38	Hyundai i20	KR 81266	WAUHE98P59A307467	\N	90	2025-04-23	2025-09-19	Automatyczna	Sprzedany	158599
+39	Renault Clio	KR 82190	1G6DN57S450641198	dui maecenas tristique	41	2026-11-08	2025-04-16	Manualna	Sprawny	126247
+40	Renault Clio	KR 89640	WAUJC58E65A898983	\N	76	2025-03-24	2025-07-31	Automatyczna	Sprawny	242223
+41	Hyundai i20	KR 76558	5J6TF1H34CL814939	nibh in lectus pellentesque	66	2026-08-19	2025-04-29	Manualna	Sprawny	162989
+42	Hyundai i20	KR 44371	WAUDH78E86A491128	et magnis dis	18	2025-07-20	2025-11-10	Automatyczna	Sprawny	202345
+43	Suzuki Swift	KR 46898	1G6DG8E59C0927909	\N	43	2026-01-15	2025-08-25	Automatyczna	Sprawny	202076
+44	Skoda Fabia	KR 81562	WAUBNAFB9BN602021	\N	80	2026-04-03	2025-07-29	Automatyczna	Sprawny	216252
+45	Opel Corsa	KR 61976	4T1BF3EK6BU565654	elementum in	41	2025-11-05	2025-06-18	Manualna	Sprawny	230186
+46	Opel Corsa	KR 49724	WA1DGBFE2DD201175	lectus suspendisse potenti in	63	2026-03-05	2025-07-03	Automatyczna	Sprawny	121669
+47	Toyota Yaris	KR 84913	5FRYD4H24FB384944	hac habitasse platea dictumst etiam	30	2026-09-10	2025-04-18	Automatyczna	Sprawny	179730
+48	Suzuki Swift	KR 48228	1D4PU6GX7BW311548	\N	8	2025-08-30	2025-09-01	Manualna	Sprawny	140231
+49	Toyota Yaris	KR 10437	1GYS4JEF3DR136943	sit amet consectetuer adipiscing elit	23	2026-01-14	2025-04-28	Manualna	Sprawny	79589
+50	Toyota Yaris	KR 96599	3GYFK66N75G607214	est phasellus sit amet erat	11	2026-06-30	2025-09-21	Manualna	Sprawny	74837
+51	Opel Corsa	KR 28318	1YVHZ8BA6A5797334	erat vestibulum	11	2026-05-13	2025-11-01	Manualna	Sprawny	76245
+52	Hyundai i20	KR 72684	WAULD54B73N953044	\N	61	2025-11-02	2025-11-08	Automatyczna	Sprawny	185268
+53	Suzuki Swift	KR 14701	SCFFDCCD2AG127714	curabitur gravida nisi at	87	2026-10-20	2025-11-29	Automatyczna	Sprzedany	196162
+54	Skoda Fabia	KR 05485	3N1AB6AP2AL417348	pharetra magna ac consequat	11	2025-12-09	2025-09-15	Automatyczna	Sprawny	82236
+55	Hyundai i20	KR 34207	WAUAH78E07A425757	eget eros elementum pellentesque	85	2026-09-05	2025-09-22	Manualna	W serwisie	175889
+56	Renault Clio	KR 28786	WVWED7AJ9BW995730	consequat in	97	2026-01-08	2025-11-08	Manualna	Sprawny	67499
+57	Toyota Yaris	KR 69278	SCFEBBBK9BG954963	\N	15	2025-12-27	2025-05-27	Automatyczna	Sprawny	221254
+58	Renault Clio	KR 18112	KNDJN2A29E7159308	maecenas ut massa quis	22	2026-12-05	2025-01-01	Manualna	Sprawny	210586
+59	Renault Clio	KR 32366	5UXFA13566L839628	urna pretium nisl ut	41	2026-02-05	2025-07-28	Automatyczna	Sprzedany	176746
+60	Suzuki Swift	KR 04561	WBAUC7C52AV511462	in magna bibendum imperdiet nullam	46	2026-07-16	2025-08-14	Automatyczna	W serwisie	82019
+61	Suzuki Swift	KR 51742	1G6DD8E31E0494838	dapibus duis at velit	51	2025-12-12	2025-01-06	Automatyczna	Sprawny	158608
+62	Opel Corsa	KR 39404	1G6AB1RX1F0356232	donec odio	15	2026-01-30	2025-05-04	Automatyczna	Sprawny	171033
+63	Hyundai i20	KR 69505	5J6TF2H54DL107624	quis augue	19	2025-06-21	2025-06-21	Automatyczna	Sprawny	156898
+64	Renault Clio	KR 19318	JTDKDTB33E1796377	id nisl venenatis lacinia aenean	11	2026-10-16	2025-08-24	Manualna	Sprawny	214140
+65	Suzuki Swift	KR 29674	WP0AA2A88BU725357	elementum pellentesque quisque porta volutpat	86	2025-05-08	2025-08-21	Manualna	Sprawny	179061
+66	Hyundai i20	KR 82159	WBAGK93441D008363	\N	66	2025-07-12	2025-07-26	Manualna	Sprawny	258465
+67	Skoda Fabia	KR 78588	WBAYB6C5XDC132451	ac nulla	9	2025-07-25	2025-01-03	Manualna	Sprzedany	110398
+68	Toyota Yaris	KR 84910	3N1BC1AP7BL521730	justo lacinia eget tincidunt	40	2025-01-12	2025-01-02	Automatyczna	Sprawny	122256
+69	Renault Clio	KR 82906	1GD312CG5DF221607	\N	65	2026-07-18	2024-12-14	Manualna	Sprawny	227081
+70	Skoda Fabia	KR 48763	KMHHT6KD5CU365148	\N	35	2025-01-26	2025-02-14	Manualna	Sprawny	168037
+71	Renault Clio	KR 88720	WBALZ5C5XCC458619	justo aliquam quis	38	2026-02-05	2025-11-21	Automatyczna	Sprawny	214086
+72	Renault Clio	KR 28257	1G6KD57977U818281	orci pede venenatis non	68	2025-07-24	2025-02-17	Automatyczna	Sprawny	149430
+73	Opel Corsa	KR 54919	WBA3F9C58EF371349	at turpis donec	63	2025-03-27	2025-04-22	Manualna	Sprawny	191440
+74	Suzuki Swift	KR 54329	WAUYGBFC2DN278562	\N	84	2025-10-26	2025-10-01	Manualna	W serwisie	129955
+75	Suzuki Swift	KR 22987	WAUSFBFL8AA089104	purus eu magna vulputate luctus	39	2025-01-19	2024-12-31	Manualna	Sprawny	205277
+76	Opel Corsa	KR 57687	WP0CA2A8XFK944623	velit id pretium	31	2024-12-27	2025-06-04	Manualna	Sprawny	210756
+77	Suzuki Swift	KR 85783	1G6DG5E50C0140202	ridiculus mus	68	2025-09-16	2025-07-24	Manualna	Sprawny	144778
+78	Kia Rio	KR 77645	SALAB2V69EA303151	\N	58	2025-07-10	2025-08-17	Automatyczna	Sprzedany	-11779
+79	Kia Rio	KR 30402	1G4PT5SV9D4892416	\N	8	2026-08-02	2025-10-16	Automatyczna	Sprawny	126118
+80	Toyota Yaris	KR 42326	JN1AZ4EH1AM879442	\N	50	2026-01-31	2025-05-26	Automatyczna	Sprawny	121463
+81	Kia Rio	KR 98096	WDDUG7JB0EA904265	vulputate justo in	88	2026-10-20	2025-07-03	Manualna	Sprawny	59685
+82	Opel Corsa	KR 01164	1G6AJ5SX9D0820384	ipsum aliquam	36	2025-01-23	2025-03-06	Automatyczna	Sprawny	103252
+83	Suzuki Swift	KR 26569	WDDNG7BB0BA565229	volutpat quam pede	85	2025-08-20	2025-08-08	Manualna	Sprawny	114235
+84	Skoda Fabia	KR 45639	WBAEB5C51AC996006	\N	34	2025-07-29	2025-09-03	Automatyczna	W serwisie	140353
+85	Skoda Fabia	KR 45551	VNKKTUD39FA729426	\N	82	2025-03-29	2024-12-31	Automatyczna	Sprawny	83379
+86	Suzuki Swift	KR 65096	3VWKX7AJ1AM090629	\N	85	2025-08-14	2025-05-09	Manualna	Sprawny	115947
+87	Renault Clio	KR 90653	WAUDH98E68A038947	sapien cum	59	2026-07-10	2025-01-15	Automatyczna	Sprawny	156442
+88	Skoda Fabia	KR 75544	WAUVC68E15A991370	\N	92	2025-04-30	2025-07-10	Automatyczna	Sprawny	194268
+89	Hyundai i20	KR 33310	19UUA9E51CA039378	\N	69	2026-11-28	2025-07-19	Automatyczna	Sprawny	150515
+90	Suzuki Swift	KR 67151	5XYZT3LB0DG662240	accumsan felis ut	17	2026-04-20	2025-04-17	Automatyczna	Sprzedany	187939
+91	Hyundai i20	KR 62278	5TDBY5G17DS101262	quis justo	17	2026-04-03	2025-03-02	Manualna	Sprawny	53024
+92	Opel Corsa	KR 60378	SCBBB7ZH0CC667368	\N	70	2025-06-17	2025-11-14	Manualna	Sprawny	57373
+93	Hyundai i20	KR 28844	19UUA9F5XDA076378	\N	32	2025-02-02	2025-04-07	Automatyczna	Sprawny	123371
+94	Toyota Yaris	KR 56204	TRUSC28NX41615513	consequat varius integer ac leo	35	2026-01-20	2025-08-23	Automatyczna	Sprzedany	177664
+95	Renault Clio	KR 40830	3C63DPNL2CG062083	\N	57	2026-09-06	2025-09-12	Manualna	Sprawny	199184
+96	Renault Clio	KR 18543	3D7TP2HTXAG874555	sapien arcu sed	51	2026-08-16	2025-04-22	Automatyczna	Sprawny	128075
+97	Toyota Yaris	KR 90671	5XYKT3A14CG522511	\N	94	2026-04-25	2025-04-26	Manualna	Sprawny	190812
+98	Hyundai i20	KR 54311	WA1MKAFP8AA156203	\N	22	2026-09-08	2025-08-08	Automatyczna	Sprawny	204134
+99	Kia Rio	KR 39016	3GYFK66N73G378658	at diam nam	37	2025-10-06	2025-03-03	Automatyczna	Sprawny	118606
+100	Suzuki Swift	KR 27785	2C4RDGCG7ER757746	sodales sed tincidunt eu felis	42	2026-11-14	2025-01-31	Manualna	Sprawny	170129
+\.
+
+
+--
+-- Data for Name: przebieg_kursu; Type: TABLE DATA; Schema: public; Owner: postgres
+--
+
+COPY public.przebieg_kursu (id_indywidualnego_kursu, id_kursanta, id_instruktora, czy_oplacone, status_kursu, data_zapisu, suma_godzin_teorii, suma_godzin_praktyki, czy_zdany_wew_teoria, czy_zdany_wew_praktyka, czy_zdany_zew_teoria, czy_zdany_zew_praktyka) FROM stdin;
+1	1	10	f	Zakończony	2025-12-10	13	30	t	t	t	t
+2	2	19	t	Zakończony	2025-11-09	6	33	t	f	t	t
+3	3	17	f	Rozpoczęty	2025-11-15	18	31	t	t	f	f
+4	4	10	t	W trakcie	2025-10-27	17	1	f	f	f	f
+5	5	10	f	W trakcie	2025-12-02	25	30	f	t	f	f
+6	6	4	f	Zakończony	2025-09-28	14	33	t	f	f	t
+7	7	18	t	Zakończony	2025-10-17	29	3	t	f	f	t
+8	8	10	t	Zakończony	2025-09-27	28	27	t	f	t	t
+9	9	8	t	W trakcie	2025-10-22	12	30	f	t	t	f
+10	10	19	f	Zakończony	2025-09-24	1	2	f	f	f	t
+11	11	19	f	Zakończony	2025-11-19	15	29	t	f	f	t
+12	12	14	f	W trakcie	2025-09-24	21	1	t	f	f	f
+13	13	16	t	Zakończony	2025-10-02	16	30	t	t	t	t
+14	14	15	f	Zakończony	2025-11-06	4	30	f	t	f	t
+15	15	5	t	W trakcie	2025-12-06	14	31	t	f	f	f
+16	16	11	t	Rozpoczęty	2025-10-24	8	30	f	t	f	f
+17	17	2	f	W trakcie	2025-11-15	24	19	t	f	t	f
+18	18	8	t	W trakcie	2025-10-25	30	28	f	f	f	f
+19	19	18	t	Zakończony	2025-11-05	10	30	t	t	f	t
+20	20	11	t	Rezygnacja	2025-10-25	25	33	f	t	t	f
+21	21	5	t	Zakończony	2025-10-16	26	30	t	t	f	t
+22	22	9	f	W trakcie	2025-11-20	22	18	f	f	t	f
+23	23	13	t	Zakończony	2025-12-05	28	30	t	t	f	t
+24	24	17	t	Zakończony	2025-10-12	28	4	t	f	f	t
+25	25	4	t	Zakończony	2025-11-21	26	30	t	t	t	f
+26	26	19	t	Zakończony	2025-10-22	11	30	t	t	t	t
+27	27	14	t	W trakcie	2025-09-28	19	21	f	f	f	f
+28	28	15	t	Zakończony	2025-12-07	10	25	f	f	t	t
+29	29	10	f	Rozpoczęty	2025-12-06	22	30	f	t	t	f
+30	30	11	t	Zakończony	2025-10-10	25	14	t	f	f	t
+31	31	20	t	W trakcie	2025-10-25	30	30	t	t	t	f
+32	32	3	t	Rezygnacja	2025-11-01	21	30	t	t	t	f
+33	33	16	f	W trakcie	2025-12-04	3	33	t	t	f	f
+34	34	6	t	Zakończony	2025-10-11	23	31	f	f	f	t
+35	35	7	f	Zakończony	2025-10-30	16	7	t	f	f	t
+36	36	4	t	W trakcie	2025-09-28	5	30	t	t	t	f
+37	37	16	f	Rozpoczęty	2025-11-19	24	30	f	t	f	f
+38	38	15	t	Zakończony	2025-11-26	16	25	t	f	t	t
+39	39	19	f	Zakończony	2025-10-13	27	26	t	f	t	t
+40	40	14	t	Zakończony	2025-10-14	13	21	t	f	f	t
+41	41	16	t	Zakończony	2025-11-28	7	30	t	t	f	t
+42	42	20	t	Zakończony	2025-10-18	25	30	t	t	t	t
+43	43	19	f	Zakończony	2025-10-11	28	30	f	t	t	t
+44	44	7	f	Zakończony	2025-11-11	18	32	f	t	f	t
+45	45	11	f	Rozpoczęty	2025-11-28	8	32	t	f	t	f
+46	46	10	t	Zakończony	2025-09-23	8	3	t	f	f	t
+47	47	11	f	Zakończony	2025-11-21	8	20	t	f	f	t
+48	48	9	t	Rozpoczęty	2025-10-26	29	30	t	t	t	f
+49	49	15	t	W trakcie	2025-12-02	14	1	t	f	t	f
+50	50	8	t	Zakończony	2025-10-08	27	30	f	t	f	t
+51	51	14	t	Rezygnacja	2025-09-12	1	19	f	f	t	f
+52	52	14	f	W trakcie	2025-12-05	23	12	t	f	f	f
+53	53	13	f	W trakcie	2025-11-25	20	30	t	t	f	f
+54	54	17	t	W trakcie	2025-12-05	9	31	t	f	f	f
+55	55	18	f	Zakończony	2025-11-13	3	30	f	t	f	t
+56	56	2	f	Zakończony	2025-12-02	15	30	f	t	t	f
+57	57	11	t	Rezygnacja	2025-09-12	16	30	t	t	t	f
+58	58	16	f	Zakończony	2025-10-12	5	21	t	f	f	t
+59	59	8	f	Zakończony	2025-11-04	10	30	f	t	f	f
+60	60	10	f	Zakończony	2025-10-02	15	27	t	f	t	t
+61	61	17	t	Rozpoczęty	2025-09-28	17	30	t	t	t	f
+62	62	5	t	Rozpoczęty	2025-12-04	16	31	t	f	f	f
+63	63	15	t	Zakończony	2025-11-15	3	32	t	f	f	t
+64	64	3	f	Rezygnacja	2025-10-17	20	30	f	t	t	f
+65	65	3	f	W trakcie	2025-10-19	22	32	t	t	f	f
+66	66	4	t	Zakończony	2025-10-28	23	30	f	t	f	t
+67	67	6	t	Zakończony	2025-09-20	20	16	t	f	t	t
+68	68	8	t	Rozpoczęty	2025-09-29	14	33	f	t	f	f
+69	69	2	t	Zakończony	2025-10-07	9	30	f	t	f	t
+70	70	1	f	Zakończony	2025-10-25	19	23	t	f	t	t
+71	71	16	f	Rozpoczęty	2025-11-05	21	16	f	f	f	f
+72	72	5	t	W trakcie	2025-09-24	30	19	f	f	f	f
+73	73	5	f	Zakończony	2025-09-26	23	30	f	t	t	t
+74	74	9	t	Rozpoczęty	2025-09-13	11	13	t	f	t	f
+75	75	3	f	Rozpoczęty	2025-11-05	24	30	t	t	t	f
+76	76	14	t	Zakończony	2025-09-25	22	31	t	t	f	t
+77	77	20	t	Zakończony	2025-10-21	28	12	f	f	t	t
+78	78	16	t	W trakcie	2025-10-01	29	30	t	t	f	f
+79	79	5	f	Zakończony	2025-09-19	25	35	t	f	f	f
+80	80	20	f	Zakończony	2025-11-04	29	25	t	f	t	t
+81	81	4	f	Zakończony	2025-09-21	3	30	t	t	t	t
+82	82	19	f	Zakończony	2025-12-12	13	30	f	t	t	t
+83	83	14	f	Zakończony	2025-10-23	23	5	f	f	f	f
+84	84	19	f	Zakończony	2025-11-28	26	30	t	t	f	t
+85	85	18	t	Rozpoczęty	2025-10-22	8	31	f	t	t	f
+86	86	16	f	Zakończony	2025-11-17	6	30	t	t	f	t
+87	87	8	t	Zakończony	2025-12-05	16	14	f	f	f	t
+88	88	5	f	W trakcie	2025-09-14	13	30	f	t	t	f
+89	89	1	t	Zakończony	2025-10-07	10	32	f	t	f	f
+90	90	19	t	Zakończony	2025-12-10	12	30	t	t	t	f
+91	91	14	t	Zakończony	2025-11-13	27	30	t	f	f	t
+92	92	9	t	Zakończony	2025-10-27	6	30	f	t	f	t
+93	93	17	f	Zakończony	2025-10-07	3	30	t	t	t	f
+94	94	1	f	Zakończony	2025-11-01	29	32	f	f	f	t
+95	95	17	f	Zakończony	2025-11-19	13	30	t	t	t	f
+96	96	6	t	Zakończony	2025-12-07	28	1	f	f	f	t
+97	97	6	t	W trakcie	2025-11-18	13	30	f	t	f	f
+98	98	8	t	Rozpoczęty	2025-10-30	29	11	t	f	f	f
+99	99	8	t	W trakcie	2025-11-16	27	32	t	t	t	f
+100	100	7	t	Rezygnacja	2025-11-04	2	2	f	f	f	f
+101	101	8	f	W trakcie	2025-10-20	7	5	f	f	t	f
+102	102	8	f	Zakończony	2025-12-06	28	10	f	f	t	t
+103	103	16	f	Zakończony	2025-12-04	15	30	t	t	f	t
+104	104	16	f	Zakończony	2025-11-06	12	30	f	t	t	f
+105	105	13	f	Zakończony	2025-09-12	28	30	t	t	t	f
+106	106	14	f	Zakończony	2025-11-16	21	30	f	t	t	t
+107	107	18	t	Zakończony	2025-11-01	5	30	f	t	t	t
+108	108	7	f	Zakończony	2025-11-21	8	12	t	f	f	f
+109	109	15	f	W trakcie	2025-09-24	24	11	f	f	f	f
+110	110	14	t	W trakcie	2025-10-19	4	30	f	t	t	f
+111	111	14	t	Zakończony	2025-09-27	30	30	t	t	t	t
+112	112	9	f	Zakończony	2025-09-14	9	12	t	f	t	t
+113	113	2	f	Zakończony	2025-10-25	21	33	t	f	t	f
+114	114	20	t	Rezygnacja	2025-10-20	25	33	f	t	t	f
+115	115	1	f	Zakończony	2025-10-18	15	30	t	t	f	t
+116	116	18	f	Zakończony	2025-09-26	30	31	f	f	f	t
+117	117	4	t	W trakcie	2025-11-01	8	14	f	f	f	f
+118	118	12	t	Zakończony	2025-11-25	20	22	t	f	t	t
+119	119	1	t	Zakończony	2025-09-13	12	30	f	t	f	f
+120	120	2	f	Zakończony	2025-10-17	22	30	f	t	f	f
+121	121	20	t	Zakończony	2025-09-20	27	30	f	t	t	t
+122	122	10	t	Zakończony	2025-11-26	10	12	t	f	t	t
+123	123	5	t	Zakończony	2025-12-01	8	30	t	t	f	t
+124	124	12	t	Rozpoczęty	2025-10-24	10	30	t	t	t	f
+125	125	16	t	W trakcie	2025-10-14	6	23	t	f	t	f
+126	126	18	t	Rozpoczęty	2025-09-14	12	30	t	t	t	f
+127	127	12	t	Zakończony	2025-11-27	3	30	t	t	f	t
+128	128	9	f	Zakończony	2025-11-01	25	20	t	f	f	t
+129	129	12	t	Rozpoczęty	2025-11-06	3	12	f	f	f	f
+130	130	10	t	Zakończony	2025-12-06	13	32	f	f	t	t
+131	131	8	f	Rozpoczęty	2025-11-28	11	30	f	t	t	f
+132	132	14	t	Zakończony	2025-11-23	1	30	t	t	t	t
+133	133	16	f	Zakończony	2025-10-02	4	30	f	t	t	t
+134	134	12	f	Rezygnacja	2025-12-02	27	31	f	t	t	f
+135	135	12	f	Zakończony	2025-09-27	15	30	t	t	t	t
+136	136	10	f	Zakończony	2025-11-02	15	30	f	t	t	t
+137	137	6	f	Zakończony	2025-11-04	4	30	f	f	f	t
+138	138	16	t	W trakcie	2025-11-27	29	4	f	f	f	f
+139	139	14	f	Zakończony	2025-10-16	24	30	t	t	f	t
+140	140	17	t	Zakończony	2025-12-01	19	9	f	f	f	t
+141	141	15	t	Zakończony	2025-10-03	21	10	f	f	f	t
+142	142	12	f	Zakończony	2025-09-30	23	20	f	f	f	t
+143	143	8	t	Zakończony	2025-09-30	23	30	f	t	f	t
+144	144	1	f	Rezygnacja	2025-11-08	30	18	t	f	t	f
+145	145	9	t	W trakcie	2025-09-22	27	29	t	f	f	f
+146	146	13	f	Rozpoczęty	2025-12-10	25	24	t	f	f	f
+147	147	3	f	Zakończony	2025-09-21	11	30	f	t	t	f
+148	148	8	t	Zakończony	2025-09-19	8	30	f	t	t	t
+149	149	13	f	W trakcie	2025-10-17	6	30	t	t	f	f
+150	150	1	f	Zakończony	2025-11-30	27	15	f	f	f	t
+151	151	10	t	Zakończony	2025-10-30	1	31	f	t	f	t
+152	152	14	f	Zakończony	2025-10-09	7	25	f	f	t	t
+153	153	10	t	Zakończony	2025-10-15	20	28	t	f	f	f
+154	154	9	t	Rezygnacja	2025-11-24	12	24	f	f	t	f
+155	155	6	t	Rozpoczęty	2025-10-11	2	4	f	f	t	f
+156	156	17	t	Zakończony	2025-11-30	14	28	t	f	t	t
+157	157	16	t	Zakończony	2025-11-06	17	30	t	t	f	f
+158	158	3	f	W trakcie	2025-12-07	17	1	t	f	f	f
+159	159	20	t	Zakończony	2025-09-29	26	30	t	t	f	t
+160	160	15	t	Zakończony	2025-12-03	21	20	t	f	f	f
+161	161	16	f	Zakończony	2025-11-03	13	30	t	t	t	t
+162	162	17	f	Zakończony	2025-11-30	3	30	f	t	f	f
+163	163	9	t	Zakończony	2025-10-25	9	22	t	f	t	t
+164	164	2	t	Zakończony	2025-11-23	5	2	f	f	f	t
+165	165	14	t	Zakończony	2025-10-12	2	22	t	f	f	t
+166	166	14	t	Rozpoczęty	2025-11-06	19	30	t	t	t	f
+167	167	12	t	Zakończony	2025-10-21	5	30	t	t	t	f
+168	168	10	t	Zakończony	2025-09-18	12	34	t	f	t	f
+169	169	1	t	Zakończony	2025-10-18	29	16	f	f	t	t
+170	170	7	f	Zakończony	2025-09-18	5	31	f	t	f	f
+171	171	17	f	W trakcie	2025-10-20	26	30	f	t	t	f
+172	172	8	t	Zakończony	2025-10-21	26	12	f	f	t	t
+173	173	8	f	Zakończony	2025-09-23	29	23	f	f	t	f
+174	174	15	f	Zakończony	2025-10-05	14	25	t	f	t	f
+175	175	16	t	Rozpoczęty	2025-09-14	10	23	t	f	f	f
+176	176	13	t	Zakończony	2025-12-02	28	30	f	t	f	t
+177	177	20	t	Rozpoczęty	2025-09-25	6	32	t	f	f	f
+178	178	2	f	Zakończony	2025-10-24	20	30	f	t	t	f
+179	179	1	f	Rezygnacja	2025-11-23	2	30	t	t	t	f
+180	180	6	t	Zakończony	2025-11-16	7	30	t	t	f	t
+181	181	3	t	Zakończony	2025-11-02	12	24	f	f	f	t
+182	182	15	t	Zakończony	2025-12-09	26	30	t	t	f	t
+183	183	20	f	Zakończony	2025-10-27	20	30	t	f	f	t
+184	184	11	f	W trakcie	2025-10-09	15	19	t	f	t	f
+185	185	9	t	W trakcie	2025-10-14	5	29	t	f	f	f
+186	186	5	t	Zakończony	2025-11-08	4	19	f	f	f	t
+187	187	7	t	Zakończony	2025-11-20	13	23	f	f	f	t
+188	188	12	t	Zakończony	2025-11-28	22	4	t	f	t	t
+189	189	13	f	Zakończony	2025-09-20	23	33	t	f	f	t
+190	190	7	f	Zakończony	2025-12-09	19	5	f	f	t	f
+191	191	6	t	W trakcie	2025-11-27	1	30	f	t	f	f
+192	192	5	f	W trakcie	2025-11-02	11	35	f	f	t	f
+193	193	7	f	Zakończony	2025-09-17	8	4	f	f	t	f
+194	194	15	f	W trakcie	2025-09-26	13	30	f	t	t	f
+195	195	18	t	Zakończony	2025-10-05	29	5	f	f	t	t
+196	196	1	t	Zakończony	2025-12-08	20	29	t	f	f	t
+197	197	14	f	Zakończony	2025-11-22	7	32	f	t	f	f
+198	198	9	t	Zakończony	2025-12-01	5	1	f	f	f	f
+199	199	3	f	W trakcie	2025-10-18	22	33	f	f	f	f
+200	200	5	t	Rozpoczęty	2025-11-16	14	30	t	t	t	f
+\.
+
+
+--
+-- Data for Name: przebieg_kursu_archiwum; Type: TABLE DATA; Schema: public; Owner: postgres
+--
+
+COPY public.przebieg_kursu_archiwum (id_archiwum, oryginalne_id_kursu, oryginalne_id_kursanta, oryginalne_id_instruktora, czy_oplacone, status_kursu, data_zapisu, suma_godzin_teorii, suma_godzin_praktyki, czy_zdany_wew_teoria, czy_zdany_wew_praktyka, czy_zdany_zew_teoria, czy_zdany_zew_praktyka, data_archiwizacji) FROM stdin;
+\.
+
+
+--
+-- Name: instruktorzy_id_instruktora_seq; Type: SEQUENCE SET; Schema: public; Owner: postgres
+--
+
+SELECT pg_catalog.setval('public.instruktorzy_id_instruktora_seq', 20, true);
+
+
+--
+-- Name: kursant_archiwum_id_archiwum_seq; Type: SEQUENCE SET; Schema: public; Owner: postgres
+--
+
+SELECT pg_catalog.setval('public.kursant_archiwum_id_archiwum_seq', 89, true);
+
+
+--
+-- Name: kursant_id_kursanta_seq; Type: SEQUENCE SET; Schema: public; Owner: postgres
+--
+
+SELECT pg_catalog.setval('public.kursant_id_kursanta_seq', 200, true);
+
+
+--
+-- Name: opiekun_archiwum_id_archiwum_seq; Type: SEQUENCE SET; Schema: public; Owner: postgres
+--
+
+SELECT pg_catalog.setval('public.opiekun_archiwum_id_archiwum_seq', 3, true);
+
+
+--
+-- Name: opiekun_id_opiekuna_seq; Type: SEQUENCE SET; Schema: public; Owner: postgres
+--
+
+SELECT pg_catalog.setval('public.opiekun_id_opiekuna_seq', 7, true);
+
+
+--
+-- Name: opinie_id_opinii_seq; Type: SEQUENCE SET; Schema: public; Owner: postgres
+--
+
+SELECT pg_catalog.setval('public.opinie_id_opinii_seq', 50, true);
+
+
+--
+-- Name: platnosci_archiwum_id_archiwum_seq; Type: SEQUENCE SET; Schema: public; Owner: postgres
+--
+
+SELECT pg_catalog.setval('public.platnosci_archiwum_id_archiwum_seq', 121, true);
+
+
+--
+-- Name: platnosci_id_platnosci_seq; Type: SEQUENCE SET; Schema: public; Owner: postgres
+--
+
+SELECT pg_catalog.setval('public.platnosci_id_platnosci_seq', 287, true);
+
+
+--
+-- Name: pojazd_id_pojazdu_seq; Type: SEQUENCE SET; Schema: public; Owner: postgres
+--
+
+SELECT pg_catalog.setval('public.pojazd_id_pojazdu_seq', 100, true);
+
+
+--
+-- Name: przebieg_kursu_archiwum_id_archiwum_seq; Type: SEQUENCE SET; Schema: public; Owner: postgres
+--
+
+SELECT pg_catalog.setval('public.przebieg_kursu_archiwum_id_archiwum_seq', 89, true);
+
+
+--
+-- Name: przebieg_kursu_id_indywidualnego_kursu_seq; Type: SEQUENCE SET; Schema: public; Owner: postgres
+--
+
+SELECT pg_catalog.setval('public.przebieg_kursu_id_indywidualnego_kursu_seq', 200, true);
+
+
+--
+-- Name: instruktorzy instruktorzy_pkey; Type: CONSTRAINT; Schema: public; Owner: postgres
+--
+
+ALTER TABLE ONLY public.instruktorzy
+    ADD CONSTRAINT instruktorzy_pkey PRIMARY KEY (id_instruktora);
+
+
+--
+-- Name: kursant_archiwum kursant_archiwum_pkey; Type: CONSTRAINT; Schema: public; Owner: postgres
+--
+
+ALTER TABLE ONLY public.kursant_archiwum
+    ADD CONSTRAINT kursant_archiwum_pkey PRIMARY KEY (id_archiwum);
+
+
+--
+-- Name: kursant kursant_pesel_key; Type: CONSTRAINT; Schema: public; Owner: postgres
+--
+
+ALTER TABLE ONLY public.kursant
+    ADD CONSTRAINT kursant_pesel_key UNIQUE (pesel);
+
+
+--
+-- Name: kursant kursant_pkey; Type: CONSTRAINT; Schema: public; Owner: postgres
+--
+
+ALTER TABLE ONLY public.kursant
+    ADD CONSTRAINT kursant_pkey PRIMARY KEY (id_kursanta);
+
+
+--
+-- Name: opiekun_archiwum opiekun_archiwum_pkey; Type: CONSTRAINT; Schema: public; Owner: postgres
+--
+
+ALTER TABLE ONLY public.opiekun_archiwum
+    ADD CONSTRAINT opiekun_archiwum_pkey PRIMARY KEY (id_archiwum);
+
+
+--
+-- Name: opiekun opiekun_pkey; Type: CONSTRAINT; Schema: public; Owner: postgres
+--
+
+ALTER TABLE ONLY public.opiekun
+    ADD CONSTRAINT opiekun_pkey PRIMARY KEY (id_opiekuna);
+
+
+--
+-- Name: opinie opinie_pkey; Type: CONSTRAINT; Schema: public; Owner: postgres
+--
+
+ALTER TABLE ONLY public.opinie
+    ADD CONSTRAINT opinie_pkey PRIMARY KEY (id_opinii);
+
+
+--
+-- Name: platnosci_archiwum platnosci_archiwum_pkey; Type: CONSTRAINT; Schema: public; Owner: postgres
+--
+
+ALTER TABLE ONLY public.platnosci_archiwum
+    ADD CONSTRAINT platnosci_archiwum_pkey PRIMARY KEY (id_archiwum);
+
+
+--
+-- Name: platnosci platnosci_pkey; Type: CONSTRAINT; Schema: public; Owner: postgres
+--
+
+ALTER TABLE ONLY public.platnosci
+    ADD CONSTRAINT platnosci_pkey PRIMARY KEY (id_platnosci);
+
+
+--
+-- Name: pojazd pojazd_numer_rejestracyjny_key; Type: CONSTRAINT; Schema: public; Owner: postgres
+--
+
+ALTER TABLE ONLY public.pojazd
+    ADD CONSTRAINT pojazd_numer_rejestracyjny_key UNIQUE (numer_rejestracyjny);
+
+
+--
+-- Name: pojazd pojazd_pkey; Type: CONSTRAINT; Schema: public; Owner: postgres
+--
+
+ALTER TABLE ONLY public.pojazd
+    ADD CONSTRAINT pojazd_pkey PRIMARY KEY (id_pojazdu);
+
+
+--
+-- Name: przebieg_kursu_archiwum przebieg_kursu_archiwum_pkey; Type: CONSTRAINT; Schema: public; Owner: postgres
+--
+
+ALTER TABLE ONLY public.przebieg_kursu_archiwum
+    ADD CONSTRAINT przebieg_kursu_archiwum_pkey PRIMARY KEY (id_archiwum);
+
+
+--
+-- Name: przebieg_kursu przebieg_kursu_pkey; Type: CONSTRAINT; Schema: public; Owner: postgres
+--
+
+ALTER TABLE ONLY public.przebieg_kursu
+    ADD CONSTRAINT przebieg_kursu_pkey PRIMARY KEY (id_indywidualnego_kursu);
+
+
+--
+-- Name: przebieg_kursu tr_auto_koniec; Type: TRIGGER; Schema: public; Owner: postgres
+--
+
+CREATE TRIGGER tr_auto_koniec BEFORE INSERT OR UPDATE ON public.przebieg_kursu FOR EACH ROW EXECUTE FUNCTION public.auto_zakonczenie_kursu();
+
+
+--
+-- Name: platnosci tr_auto_oplata; Type: TRIGGER; Schema: public; Owner: postgres
+--
+
+CREATE TRIGGER tr_auto_oplata AFTER INSERT OR UPDATE ON public.platnosci FOR EACH ROW EXECUTE FUNCTION public.aktualizuj_czy_oplacone();
+
+
+--
+-- Name: przebieg_kursu tr_licencja_instruktora; Type: TRIGGER; Schema: public; Owner: postgres
+--
+
+CREATE TRIGGER tr_licencja_instruktora BEFORE INSERT OR UPDATE ON public.przebieg_kursu FOR EACH ROW EXECUTE FUNCTION public.sprawdz_licencje_instruktora();
+
+
+--
+-- Name: przebieg_kursu tr_sprawdz_badania; Type: TRIGGER; Schema: public; Owner: postgres
+--
+
+CREATE TRIGGER tr_sprawdz_badania BEFORE INSERT ON public.przebieg_kursu FOR EACH ROW EXECUTE FUNCTION public.sprawdz_badania_przed_kursem();
+
+
+--
+-- Name: instruktorzy tr_tylko_sprawne_auta; Type: TRIGGER; Schema: public; Owner: postgres
+--
+
+CREATE TRIGGER tr_tylko_sprawne_auta BEFORE INSERT OR UPDATE ON public.instruktorzy FOR EACH ROW EXECUTE FUNCTION public.sprawdz_stan_auta();
+
+
+--
+-- Name: przebieg_kursu tr_wymog_30h; Type: TRIGGER; Schema: public; Owner: postgres
+--
+
+CREATE TRIGGER tr_wymog_30h BEFORE UPDATE ON public.przebieg_kursu FOR EACH ROW EXECUTE FUNCTION public.wymagane_godziny();
+
+
+--
+-- Name: instruktorzy instruktorzy_id_pojazdu_fkey; Type: FK CONSTRAINT; Schema: public; Owner: postgres
+--
+
+ALTER TABLE ONLY public.instruktorzy
+    ADD CONSTRAINT instruktorzy_id_pojazdu_fkey FOREIGN KEY (id_pojazdu) REFERENCES public.pojazd(id_pojazdu);
+
+
+--
+-- Name: opiekun opiekun_id_kursanta_fkey; Type: FK CONSTRAINT; Schema: public; Owner: postgres
+--
+
+ALTER TABLE ONLY public.opiekun
+    ADD CONSTRAINT opiekun_id_kursanta_fkey FOREIGN KEY (id_kursanta) REFERENCES public.kursant(id_kursanta);
+
+
+--
+-- Name: opinie opinie_id_instruktora_fkey; Type: FK CONSTRAINT; Schema: public; Owner: postgres
+--
+
+ALTER TABLE ONLY public.opinie
+    ADD CONSTRAINT opinie_id_instruktora_fkey FOREIGN KEY (id_instruktora) REFERENCES public.instruktorzy(id_instruktora);
+
+
+--
+-- Name: platnosci platnosci_id_indywidualnego_kursu_fkey; Type: FK CONSTRAINT; Schema: public; Owner: postgres
+--
+
+ALTER TABLE ONLY public.platnosci
+    ADD CONSTRAINT platnosci_id_indywidualnego_kursu_fkey FOREIGN KEY (id_indywidualnego_kursu) REFERENCES public.przebieg_kursu(id_indywidualnego_kursu);
+
+
+--
+-- Name: przebieg_kursu przebieg_kursu_id_instruktora_fkey; Type: FK CONSTRAINT; Schema: public; Owner: postgres
+--
+
+ALTER TABLE ONLY public.przebieg_kursu
+    ADD CONSTRAINT przebieg_kursu_id_instruktora_fkey FOREIGN KEY (id_instruktora) REFERENCES public.instruktorzy(id_instruktora);
+
+
+--
+-- Name: przebieg_kursu przebieg_kursu_id_kursanta_fkey; Type: FK CONSTRAINT; Schema: public; Owner: postgres
+--
+
+ALTER TABLE ONLY public.przebieg_kursu
+    ADD CONSTRAINT przebieg_kursu_id_kursanta_fkey FOREIGN KEY (id_kursanta) REFERENCES public.kursant(id_kursanta);
+
+
+--
+-- Name: TABLE instruktorzy; Type: ACL; Schema: public; Owner: postgres
+--
+
+GRANT ALL ON TABLE public.instruktorzy TO administrator;
+GRANT SELECT,INSERT,UPDATE ON TABLE public.instruktorzy TO pracownik_biura;
+
+
+--
+-- Name: SEQUENCE instruktorzy_id_instruktora_seq; Type: ACL; Schema: public; Owner: postgres
+--
+
+GRANT ALL ON SEQUENCE public.instruktorzy_id_instruktora_seq TO administrator;
+GRANT SELECT,USAGE ON SEQUENCE public.instruktorzy_id_instruktora_seq TO pracownik_biura;
+
+
+--
+-- Name: TABLE kursant; Type: ACL; Schema: public; Owner: postgres
+--
+
+GRANT ALL ON TABLE public.kursant TO administrator;
+GRANT SELECT,INSERT,UPDATE ON TABLE public.kursant TO pracownik_biura;
+GRANT SELECT ON TABLE public.kursant TO instruktor;
+
+
+--
+-- Name: COLUMN kursant.id_kursanta; Type: ACL; Schema: public; Owner: postgres
+--
+
+GRANT SELECT(id_kursanta) ON TABLE public.kursant TO PUBLIC;
+
+
+--
+-- Name: COLUMN kursant.imie; Type: ACL; Schema: public; Owner: postgres
+--
+
+GRANT SELECT(imie) ON TABLE public.kursant TO PUBLIC;
+
+
+--
+-- Name: COLUMN kursant.nazwisko; Type: ACL; Schema: public; Owner: postgres
+--
+
+GRANT SELECT(nazwisko) ON TABLE public.kursant TO PUBLIC;
+
+
+--
+-- Name: COLUMN kursant.zgoda_marketingowa; Type: ACL; Schema: public; Owner: postgres
+--
+
+GRANT SELECT(zgoda_marketingowa) ON TABLE public.kursant TO PUBLIC;
+
+
+--
+-- Name: COLUMN kursant.numer_pkk; Type: ACL; Schema: public; Owner: postgres
+--
+
+GRANT SELECT(numer_pkk) ON TABLE public.kursant TO PUBLIC;
+
+
+--
+-- Name: COLUMN kursant.status_pkk; Type: ACL; Schema: public; Owner: postgres
+--
+
+GRANT SELECT(status_pkk) ON TABLE public.kursant TO PUBLIC;
+
+
+--
+-- Name: SEQUENCE kursant_id_kursanta_seq; Type: ACL; Schema: public; Owner: postgres
+--
+
+GRANT ALL ON SEQUENCE public.kursant_id_kursanta_seq TO administrator;
+GRANT SELECT,USAGE ON SEQUENCE public.kursant_id_kursanta_seq TO pracownik_biura;
+
+
+--
+-- Name: TABLE opiekun; Type: ACL; Schema: public; Owner: postgres
+--
+
+GRANT ALL ON TABLE public.opiekun TO administrator;
+
+
+--
+-- Name: SEQUENCE opiekun_id_opiekuna_seq; Type: ACL; Schema: public; Owner: postgres
+--
+
+GRANT ALL ON SEQUENCE public.opiekun_id_opiekuna_seq TO administrator;
+GRANT SELECT,USAGE ON SEQUENCE public.opiekun_id_opiekuna_seq TO pracownik_biura;
+
+
+--
+-- Name: TABLE opinie; Type: ACL; Schema: public; Owner: postgres
+--
+
+GRANT ALL ON TABLE public.opinie TO administrator;
+
+
+--
+-- Name: SEQUENCE opinie_id_opinii_seq; Type: ACL; Schema: public; Owner: postgres
+--
+
+GRANT ALL ON SEQUENCE public.opinie_id_opinii_seq TO administrator;
+GRANT SELECT,USAGE ON SEQUENCE public.opinie_id_opinii_seq TO pracownik_biura;
+
+
+--
+-- Name: TABLE platnosci; Type: ACL; Schema: public; Owner: postgres
+--
+
+GRANT ALL ON TABLE public.platnosci TO administrator;
+GRANT SELECT,INSERT,UPDATE ON TABLE public.platnosci TO pracownik_biura;
+
+
+--
+-- Name: SEQUENCE platnosci_id_platnosci_seq; Type: ACL; Schema: public; Owner: postgres
+--
+
+GRANT ALL ON SEQUENCE public.platnosci_id_platnosci_seq TO administrator;
+GRANT SELECT,USAGE ON SEQUENCE public.platnosci_id_platnosci_seq TO pracownik_biura;
+
+
+--
+-- Name: TABLE pojazd; Type: ACL; Schema: public; Owner: postgres
+--
+
+GRANT ALL ON TABLE public.pojazd TO administrator;
+GRANT SELECT,INSERT,UPDATE ON TABLE public.pojazd TO pracownik_biura;
+GRANT SELECT ON TABLE public.pojazd TO instruktor;
+
+
+--
+-- Name: SEQUENCE pojazd_id_pojazdu_seq; Type: ACL; Schema: public; Owner: postgres
+--
+
+GRANT ALL ON SEQUENCE public.pojazd_id_pojazdu_seq TO administrator;
+GRANT SELECT,USAGE ON SEQUENCE public.pojazd_id_pojazdu_seq TO pracownik_biura;
+
+
+--
+-- Name: TABLE przebieg_kursu; Type: ACL; Schema: public; Owner: postgres
+--
+
+GRANT ALL ON TABLE public.przebieg_kursu TO administrator;
+GRANT SELECT,INSERT,UPDATE ON TABLE public.przebieg_kursu TO pracownik_biura;
+GRANT SELECT ON TABLE public.przebieg_kursu TO instruktor;
+
+
+--
+-- Name: COLUMN przebieg_kursu.suma_godzin_teorii; Type: ACL; Schema: public; Owner: postgres
+--
+
+GRANT UPDATE(suma_godzin_teorii) ON TABLE public.przebieg_kursu TO instruktor;
+
+
+--
+-- Name: COLUMN przebieg_kursu.suma_godzin_praktyki; Type: ACL; Schema: public; Owner: postgres
+--
+
+GRANT UPDATE(suma_godzin_praktyki) ON TABLE public.przebieg_kursu TO instruktor;
+
+
+--
+-- Name: COLUMN przebieg_kursu.czy_zdany_wew_teoria; Type: ACL; Schema: public; Owner: postgres
+--
+
+GRANT UPDATE(czy_zdany_wew_teoria) ON TABLE public.przebieg_kursu TO instruktor;
+
+
+--
+-- Name: COLUMN przebieg_kursu.czy_zdany_wew_praktyka; Type: ACL; Schema: public; Owner: postgres
+--
+
+GRANT UPDATE(czy_zdany_wew_praktyka) ON TABLE public.przebieg_kursu TO instruktor;
+
+
+--
+-- Name: SEQUENCE przebieg_kursu_id_indywidualnego_kursu_seq; Type: ACL; Schema: public; Owner: postgres
+--
+
+GRANT ALL ON SEQUENCE public.przebieg_kursu_id_indywidualnego_kursu_seq TO administrator;
+GRANT SELECT,USAGE ON SEQUENCE public.przebieg_kursu_id_indywidualnego_kursu_seq TO pracownik_biura;
+
+
+--
+-- Name: TABLE v_pojazdy_do_serwisu; Type: ACL; Schema: public; Owner: postgres
+--
+
+GRANT ALL ON TABLE public.v_pojazdy_do_serwisu TO administrator;
+
+
+--
+-- Name: TABLE v_postepy_kursantow; Type: ACL; Schema: public; Owner: postgres
+--
+
+GRANT ALL ON TABLE public.v_postepy_kursantow TO administrator;
+
+
+--
+-- Name: TABLE v_zaleglosci_platnicze; Type: ACL; Schema: public; Owner: postgres
+--
+
+GRANT ALL ON TABLE public.v_zaleglosci_platnicze TO administrator;
+
+
+--
+-- PostgreSQL database dump complete
+--
+
+\unrestrict MeiaySM9CkUXOM7C3s4vRIrMTentD7shiAsXDNVzY3S21DyJ6mPVdvIcEJvbD6C
+

@@ -48,6 +48,14 @@ CREATE TABLE Instruktorzy (
     email VARCHAR(255),
     data_waznosci_licencji DATE
 );
+-- Tabela OPINIE
+CREATE TABLE Opinie (
+    ID_Opinii SERIAL PRIMARY KEY,
+    ID_Instruktora INT REFERENCES Instruktorzy(ID_Instruktora),
+    ocena INT,
+    komentarz TEXT,
+    data_dodania DATE DEFAULT CURRENT_DATE,
+);
 
 -- Tabela KURSANT
 CREATE TABLE Kursant (
@@ -65,9 +73,16 @@ CREATE TABLE Kursant (
     status_PKK status_pkk_enum DEFAULT 'Aktywny',
     badania_lekarskie BOOLEAN DEFAULT FALSE,
     data_waznosci_badan DATE,
+    
+);
+-- Tabela OPIEKUN
+CREATE TABLE Opiekun (
+    ID_Opiekuna SERIAL PRIMARY KEY,
+    ID_Kursanta INT NOT NULL REFERENCES Kursant(ID_Kursanta),
     imie_op VARCHAR(50),
     nazwisko_op VARCHAR(50),
     numer_telefonu_op VARCHAR(20)
+    email_op VARCHAR(255),
 );
 
 -- Tabela PRZEBIEG_KURSU

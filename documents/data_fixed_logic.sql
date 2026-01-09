@@ -821,6 +821,8 @@ insert into Opinie (ID_Instruktora, ocena, komentarz) values (6, 4, 'Instruktor 
 
 COMMIT;
 
+BEGIN;
+
 -- Korekta płatności (Generated corrections)
 insert into Platnosci (ID_indywidualnego_kursu, kwota, data_platnosci, metoda_platnosci, tytul_platnosci, id_faktury) values (2, 2216.34, '2025-11-09', 'Przelew', 'Dopłata wyrównawcza', 'FV/2026/FIX2');
 insert into Platnosci (ID_indywidualnego_kursu, kwota, data_platnosci, metoda_platnosci, tytul_platnosci, id_faktury) values (4, 2331.58, '2025-10-27', 'Przelew', 'Dopłata wyrównawcza', 'FV/2026/FIX4');
@@ -909,3 +911,5 @@ insert into Platnosci (ID_indywidualnego_kursu, kwota, data_platnosci, metoda_pl
 insert into Platnosci (ID_indywidualnego_kursu, kwota, data_platnosci, metoda_platnosci, tytul_platnosci, id_faktury) values (195, 1060.65, '2025-10-05', 'Przelew', 'Dopłata wyrównawcza', 'FV/2026/FIX195');
 insert into Platnosci (ID_indywidualnego_kursu, kwota, data_platnosci, metoda_platnosci, tytul_platnosci, id_faktury) values (196, 2175.89, '2025-12-08', 'Przelew', 'Dopłata wyrównawcza', 'FV/2026/FIX196');
 insert into Platnosci (ID_indywidualnego_kursu, kwota, data_platnosci, metoda_platnosci, tytul_platnosci, id_faktury) values (198, 566.04, '2025-12-01', 'Przelew', 'Dopłata wyrównawcza', 'FV/2026/FIX198');
+
+COMMIT;

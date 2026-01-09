@@ -71,3 +71,54 @@ CREATE TRIGGER tr_sprawdz_badania
 BEFORE INSERT ON Przebieg_kursu
 FOR EACH ROW
 EXECUTE PROCEDURE sprawdz_badania_przed_kursem();
+
+
+
+CREATE OR REPLACE FUNCTION sprawdz_licencje_instruktora() RETURNS TRIGGER AS '
+DECLARE
+    waznosc_licencji DATE;
+BEGIN
+    -- Pobieramy datę ważności licencji przypisanego instruktora
+    SELECT data_waznosci_licencji INTO waznosc_licencji FROM Instruktorzy WHERE ID_Instruktora = NEW.ID_Instruktora;
+
+    -- Jeśli licencja wygasła, blokujemy przypisanie
+    IF waznosc_licencji < CURRENT_DATE THEN
+        RAISE EXCEPTION ''Błąd: Instruktor ma nieważną licencję (ważna do: %). Wybierz innego instruktora.'', waznosc_licencji;
+    END IF;
+    
+    RETURN NEW;
+END;
+' LANGUAGE 'plpgsql';
+
+CREATE TRIGGER tr_licencja_instruktora
+BEFORE INSERT OR UPDATE ON Przebieg_kursu
+FOR EACH ROW
+EXECUTE PROCEDURE sprawdz_licencje_instruktora();
+
+
+
+CREATE OR REPLACE FUNCTION aktualizuj_czy_oplacone() RETURNS TRIGGER AS '
+DECLARE
+    suma_wplat DECIMAL(10, 2);
+    cena_kursu DECIMAL(10, 2) := 3200.00; 
+BEGIN
+    -- Liczymy sumę wszystkich wpłat dla danego kursu
+    SELECT SUM(kwota) INTO suma_wplat 
+    FROM Platnosci 
+    WHERE ID_indywidualnego_kursu = NEW.ID_indywidualnego_kursu;
+
+    -- Jeśli suma wpłat pokrywa cenę, odhaczamy kurs jako opłacony
+    IF suma_wplat >= cena_kursu THEN
+        UPDATE Przebieg_kursu 
+        SET czy_oplacone = TRUE 
+        WHERE ID_indywidualnego_kursu = NEW.ID_indywidualnego_kursu;
+    END IF;
+
+    RETURN NEW;
+END;
+' LANGUAGE 'plpgsql';
+
+CREATE TRIGGER tr_auto_oplata
+AFTER INSERT OR UPDATE ON Platnosci
+FOR EACH ROW
+EXECUTE PROCEDURE aktualizuj_czy_oplacone();

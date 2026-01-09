@@ -758,12 +758,12 @@ COMMIT; -- Zatwierdzenie transakcji (zapisanie zmian w bazie)
 -- 6. TABELA OPIEKUN (Generated)
 -- =============================================
 insert into Opiekun (ID_Kursanta, imie_op, nazwisko_op, numer_telefonu_op) values (34, 'Louisette', 'Mercik', NULL);
-insert into Opiekun (ID_Kursanta, imie_op, nazwisko_op, numer_telefonu_op) values (37, 'Nieznany', 'Nieznany', NULL);
-insert into Opiekun (ID_Kursanta, imie_op, nazwisko_op, numer_telefonu_op) values (42, 'Nieznany', 'Nieznany', NULL);
-insert into Opiekun (ID_Kursanta, imie_op, nazwisko_op, numer_telefonu_op) values (62, 'Nieznany', 'Nieznany', NULL);
-insert into Opiekun (ID_Kursanta, imie_op, nazwisko_op, numer_telefonu_op) values (105, 'Nieznany', 'Nieznany', NULL);
-insert into Opiekun (ID_Kursanta, imie_op, nazwisko_op, numer_telefonu_op) values (125, 'Nieznany', 'Nieznany', NULL);
-insert into Opiekun (ID_Kursanta, imie_op, nazwisko_op, numer_telefonu_op) values (150, 'Nieznany', 'Nieznany', NULL);
+insert into Opiekun (ID_Kursanta, imie_op, nazwisko_op, numer_telefonu_op) values (37, 'Łukasz', 'Wiśniewski', NULL);
+insert into Opiekun (ID_Kursanta, imie_op, nazwisko_op, numer_telefonu_op) values (42, 'Ewa', 'Jabłoński', NULL);
+insert into Opiekun (ID_Kursanta, imie_op, nazwisko_op, numer_telefonu_op) values (62, 'Jerzy', 'Nowakowski', NULL);
+insert into Opiekun (ID_Kursanta, imie_op, nazwisko_op, numer_telefonu_op) values (105, 'Tomasz', 'Zieliński', NULL);
+insert into Opiekun (ID_Kursanta, imie_op, nazwisko_op, numer_telefonu_op) values (125, 'Józef', 'Jabłoński', NULL);
+insert into Opiekun (ID_Kursanta, imie_op, nazwisko_op, numer_telefonu_op) values (150, 'Tadeusz', 'Wróbel', NULL);
 
 -- =============================================
 -- 7. TABELA OPINIE (Generated)
